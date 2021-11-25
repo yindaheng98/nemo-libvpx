@@ -11,6 +11,8 @@
 #ifndef VP9_COMMON_VP9_ONYXC_INT_H_
 #define VP9_COMMON_VP9_ONYXC_INT_H_
 
+#include <vpx/vpx_nemo.h>
+
 #include "./vpx_config.h"
 #include "vpx/internal/vpx_codec_internal.h"
 #include "vpx_util/vpx_thread.h"
@@ -71,12 +73,19 @@ typedef struct {
   int mi_cols;
   uint8_t released;
   vpx_codec_frame_buffer_t raw_frame_buffer;
+    vpx_codec_frame_buffer_t raw_sr_frame_buffer;
   YV12_BUFFER_CONFIG buf;
+
+    /* NEMO: new variables */
+    YV12_BUFFER_CONFIG sr_buf;
+    int current_video_frame;
+    int current_super_frame;
 } RefCntBuffer;
 
 typedef struct BufferPool {
   // Private data associated with the frame buffer callbacks.
   void *cb_priv;
+    uint8_t mode;
 
   vpx_get_frame_buffer_cb_fn_t get_fb_cb;
   vpx_release_frame_buffer_cb_fn_t release_fb_cb;
@@ -87,6 +96,7 @@ typedef struct BufferPool {
   InternalFrameBufferList int_frame_buffers;
 } BufferPool;
 
+//TODO (NEMO): declare SNPE variable inside this structure
 typedef struct VP9Common {
   struct vpx_internal_error_info error;
   vpx_color_space_t color_space;
@@ -107,6 +117,28 @@ typedef struct VP9Common {
 #if CONFIG_VP9_HIGHBITDEPTH
   int use_highbitdepth;  // Marks if we need to use 16bit frame buffers.
 #endif
+
+    struct scale_factors sf;
+
+    /* NEMO: Variables for applying or caching DNN */
+    nemo_cfg_t *nemo_cfg;
+    struct scale_factors sf_upsample_inter;
+    int scale;
+    int apply_dnn;
+
+    /* NEMO: Variables for logging */
+    nemo_latency_t latency;
+    nemo_metdata_t metadata;
+    FILE *quality_log;
+    FILE *latency_log;
+    FILE *metadata_log;
+    YV12_BUFFER_CONFIG *yv12_input_frame;
+    YV12_BUFFER_CONFIG *yv12_reference_frame;
+    RGB24_BUFFER_CONFIG *rgb24_input_frame;
+    RGB24_BUFFER_CONFIG *rgb24_reference_frame;
+    RGB24_BUFFER_CONFIG *rgb24_input_tensor;
+    RGB24_BUFFER_CONFIG *rgb24_sr_tensor;
+    unsigned int current_super_frame;
 
   YV12_BUFFER_CONFIG *frame_to_show;
   RefCntBuffer *prev_frame;
@@ -267,6 +299,10 @@ static INLINE YV12_BUFFER_CONFIG *get_ref_frame(VP9_COMMON *cm, int index) {
 
 static INLINE YV12_BUFFER_CONFIG *get_frame_new_buffer(VP9_COMMON *cm) {
   return &cm->buffer_pool->frame_bufs[cm->new_fb_idx].buf;
+}
+
+static INLINE YV12_BUFFER_CONFIG *get_sr_frame_new_buffer(VP9_COMMON *cm) {
+    return &cm->buffer_pool->frame_bufs[cm->new_fb_idx].sr_buf;
 }
 
 static INLINE int get_free_fb(VP9_COMMON *cm) {

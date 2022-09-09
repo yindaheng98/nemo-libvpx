@@ -10,9 +10,13 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <math.h>
 
 #include "./vpx_config.h"
 #include "./vpx_version.h"
+#include "./tools_common.h"
 
 #include "vpx/internal/vpx_codec_internal.h"
 #include "vpx/vp8dx.h"
@@ -29,7 +33,19 @@
 #include "vp9/vp9_dx_iface.h"
 #include "vp9/vp9_iface_common.h"
 
+#include <sys/param.h>
+#include <vpx_util/vpx_write_yuv_frame.h>
+#include <vpx_dsp/psnr.h>
+#include <vpx_dsp/ssim.h>
+#include <vpx_dsp_rtcd.h>
+
+
 #define VP9_CAP_POSTPROC (CONFIG_VP9_POSTPROC ? VPX_CODEC_CAP_POSTPROC : 0)
+
+#define DEBUG_LATENCY 1
+#define BILLION  1E9
+#define LOG_MAX 1000
+
 
 static vpx_codec_err_t decoder_init(vpx_codec_ctx_t *ctx,
                                     vpx_codec_priv_enc_mr_cfg_t *data) {
@@ -65,6 +81,9 @@ static vpx_codec_err_t decoder_destroy(vpx_codec_alg_priv_t *ctx) {
     vp9_free_ref_frame_buffers(ctx->buffer_pool);
     vp9_free_internal_frame_buffers(&ctx->buffer_pool->int_frame_buffers);
   }
+
+    /* NEMO: free nemo_cfg */
+    remove_nemo_cfg(ctx->nemo_cfg);
 
   vpx_free(ctx->buffer_pool);
   vpx_free(ctx);
@@ -235,7 +254,61 @@ static void set_ppflags(const vpx_codec_alg_priv_t *ctx, vp9_ppflags_t *flags) {
   flags->noise_level = ctx->postproc_cfg.noise_level;
 }
 
+static vpx_codec_err_t load_nemo_cfg(vpx_codec_alg_priv_t *ctx, nemo_cfg_t *nemo_cfg) {
+    ctx->nemo_cfg = init_nemo_cfg();
+    memcpy(ctx->nemo_cfg, nemo_cfg, sizeof(nemo_cfg_t));
+
+    return VPX_CODEC_OK;
+}
+
+static vpx_codec_err_t
+load_nemo_dnn(vpx_codec_alg_priv_t *ctx, int scale, const char *dnn_file) {
+    if (ctx->nemo_cfg == NULL) {
+        return VPX_NEMO_ERROR;
+    }
+
+    ctx->nemo_cfg->dnn = init_nemo_dnn(scale);
+
+    return VPX_CODEC_OK;
+}
+
+static vpx_codec_err_t
+load_nemo_cache_profile(vpx_codec_alg_priv_t *ctx, int scale, const char *cache_profile_path) {
+    if (ctx->nemo_cfg == NULL) {
+        return VPX_NEMO_ERROR;
+    }
+
+    ctx->nemo_cfg->cache_profile = init_nemo_cache_profile();
+    ctx->nemo_cfg->bilinear_coeff = init_bilinear_coeff(64, 64, scale);
+
+    if ((ctx->nemo_cfg->cache_profile->file = fopen(cache_profile_path, "rb")) == NULL) {
+#ifdef __ANDROID_API__
+        LOGE("Failed to open a file");
+#endif
+        fprintf(stderr, "%s: fail to open a file %s\n", __func__, cache_profile_path);
+        return VPX_NEMO_ERROR;
+    }
+
+    struct stat buf;
+    fstat(fileno(ctx->nemo_cfg->cache_profile->file), &buf);
+    ctx->nemo_cfg->cache_profile->file_size = buf.st_size;
+
+    return VPX_CODEC_OK;
+}
+
 static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
+    char file_path[PATH_MAX] = {0};
+
+    /* NEMO: validate nemo_cfg */
+    if (ctx->nemo_cfg->bilinear_coeff == NULL) {
+      return VPX_NEMO_ERROR;
+    }
+    if (ctx->nemo_cfg->cache_mode == PROFILE_CACHE) {
+        if (ctx->nemo_cfg->cache_profile == NULL) {
+            return VPX_NEMO_ERROR;
+        }
+    }
+
   ctx->last_show_frame = -1;
   ctx->need_resync = 1;
   ctx->flushed = 0;
@@ -257,6 +330,28 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
     set_default_ppflags(&ctx->postproc_cfg);
 
   init_buffer_callbacks(ctx);
+
+    /* NEMO: copy variables from ctx->nemo_cfg */
+    ctx->pbi->common.nemo_cfg = ctx->nemo_cfg;
+    ctx->pbi->common.scale = ctx->nemo_dnn_cfg->scale;
+    ctx->pbi->common.apply_dnn = ctx->nemo_dnn_cfg->apply_dnn;
+    ctx->pbi->common.dnn = ctx->nemo_dnn_cfg->dnn;
+
+    /* NEMO: initialize workers */
+    const int num_threads = (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1;
+    if ((ctx->pbi->nemo_worker_data = init_nemo_worker(num_threads, ctx->nemo_cfg)) ==
+        NULL) {
+        set_error_detail(ctx, "Failed to allocate nemo_worker_data");
+        return VPX_NEMO_ERROR;
+    }
+
+    /* NEMO: initialize frames/tensors */
+    ctx->pbi->common.rgb24_input_tensor = (RGB24_BUFFER_CONFIG *) vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
+    ctx->pbi->common.rgb24_sr_tensor = (RGB24_BUFFER_CONFIG *) vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
+    ctx->pbi->common.yv12_input_frame = (YV12_BUFFER_CONFIG *) vpx_calloc(1, sizeof(YV12_BUFFER_CONFIG));
+    ctx->pbi->common.yv12_reference_frame = (YV12_BUFFER_CONFIG *) vpx_calloc(1, sizeof(YV12_BUFFER_CONFIG));
+    ctx->pbi->common.rgb24_input_frame = (RGB24_BUFFER_CONFIG *) vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
+    ctx->pbi->common.rgb24_reference_frame = (RGB24_BUFFER_CONFIG *) vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
 
   return VPX_CODEC_OK;
 }
@@ -688,5 +783,10 @@ CODEC_INTERFACE(vpx_codec_vp9_dx) = {
       NULL,  // vpx_codec_get_global_headers_fn_t
       NULL,  // vpx_codec_get_preview_frame_fn_t
       NULL   // vpx_codec_enc_mr_get_mem_loc_fn_t
+  },
+  {
+      load_nemo_cfg,
+      load_nemo_dnn,
+      load_nemo_cache_profile
   }
 };

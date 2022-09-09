@@ -45,6 +45,14 @@
 
 #define MAX_VP9_HEADER_SIZE 80
 
+#include <vpx_util/vpx_write_yuv_frame.h>
+#include <vpx_dsp/psnr.h>
+#include <vpx/vpx_nemo.h>
+
+#define TURN_OFF_MV 0
+#define TURN_OFF_RESIDUAL 0
+#define BILLION 1E9
+
 static int is_compound_reference_allowed(const VP9_COMMON *cm) {
   int i;
   for (i = 1; i < REFS_PER_FRAME; ++i)
@@ -248,6 +256,84 @@ static void inverse_transform_block_inter(MACROBLOCKD *xd, int plane,
   }
 }
 
+/* NEMO: decode residual and copy it into residual buffer */
+static void inverse_transform_block_inter_copy(MACROBLOCKD *xd, int plane,
+                                               const TX_SIZE tx_size,
+                                               uint8_t *dst, int stride,
+                                               int16_t *residual,
+                                               int res_stride, int eob) {
+  struct macroblockd_plane *const pd = &xd->plane[plane];
+  tran_low_t *const dqcoeff = pd->dqcoeff;
+  assert(eob > 0);
+#if CONFIG_VP9_HIGHBITDEPTH
+  if (xd->cur_buf->flags & YV12_FLAG_HIGHBITDEPTH) {
+    uint16_t *const dst16 = CONVERT_TO_SHORTPTR(dst);
+    if (xd->lossless) {
+      vp9_highbd_iwht4x4_add(dqcoeff, dst16, stride, eob, xd->bd);
+    } else {
+      switch (tx_size) {
+        case TX_4X4:
+          vp9_highbd_idct4x4_add(dqcoeff, dst16, stride, eob, xd->bd);
+          break;
+        case TX_8X8:
+          vp9_highbd_idct8x8_add(dqcoeff, dst16, stride, eob, xd->bd);
+          break;
+        case TX_16X16:
+          vp9_highbd_idct16x16_add(dqcoeff, dst16, stride, eob, xd->bd);
+          break;
+        case TX_32X32:
+          vp9_highbd_idct32x32_add(dqcoeff, dst16, stride, eob, xd->bd);
+          break;
+        default: assert(0 && "Invalid transform size");
+      }
+    }
+  } else {
+    if (xd->lossless) {
+      vp9_iwht4x4_add(dqcoeff, dst, stride, eob);
+    } else {
+      switch (tx_size) {
+        case TX_4X4: vp9_idct4x4_add(dqcoeff, dst, stride, eob); break;
+        case TX_8X8: vp9_idct8x8_add(dqcoeff, dst, stride, eob); break;
+        case TX_16X16: vp9_idct16x16_add(dqcoeff, dst, stride, eob); break;
+        case TX_32X32: vp9_idct32x32_add(dqcoeff, dst, stride, eob); break;
+        default: assert(0 && "Invalid transform size"); return;
+      }
+    }
+  }
+#else
+  if (xd->lossless) {
+    vp9_iwht4x4_add(dqcoeff, dst, stride, eob);
+  } else {
+    switch (tx_size) {
+      case TX_4X4:
+        vp9_idct4x4_copy_add(dqcoeff, dst, stride, residual, res_stride, eob);
+        break;
+      case TX_8X8:
+        vp9_idct8x8_copy_add(dqcoeff, dst, stride, residual, res_stride, eob);
+        break;
+      case TX_16X16:
+        vp9_idct16x16_copy_add(dqcoeff, dst, stride, residual, res_stride, eob);
+        break;
+      case TX_32X32:
+        vp9_idct32x32_copy_add(dqcoeff, dst, stride, residual, res_stride, eob);
+        break;
+      default: assert(0 && "Invalid transform size"); return;
+    }
+  }
+#endif  // CONFIG_VP9_HIGHBITDEPTH
+
+  if (eob == 1) {
+    dqcoeff[0] = 0;
+  } else {
+    if (tx_size <= TX_16X16 && eob <= 10)
+      memset(dqcoeff, 0, 4 * (4 << tx_size) * sizeof(dqcoeff[0]));
+    else if (tx_size == TX_32X32 && eob <= 34)
+      memset(dqcoeff, 0, 256 * sizeof(dqcoeff[0]));
+    else
+      memset(dqcoeff, 0, (16 << (tx_size << 1)) * sizeof(dqcoeff[0]));
+  }
+}
+
 static void inverse_transform_block_intra(MACROBLOCKD *xd, int plane,
                                           const TX_TYPE tx_type,
                                           const TX_SIZE tx_size, uint8_t *dst,
@@ -352,18 +438,26 @@ static void predict_and_reconstruct_intra_block(TileWorkerData *twd,
 }
 
 static int reconstruct_inter_block(TileWorkerData *twd, MODE_INFO *const mi,
-                                   int plane, int row, int col,
-                                   TX_SIZE tx_size) {
+                                   int plane, int row, int col, TX_SIZE tx_size,
+                                   VP9_COMMON *const cm) {
   MACROBLOCKD *const xd = &twd->xd;
   struct macroblockd_plane *const pd = &xd->plane[plane];
   const scan_order *sc = &vp9_default_scan_orders[tx_size];
   const int eob = vp9_decode_block_tokens(twd, plane, sc, col, row, tx_size,
                                           mi->segment_id);
 
+  /* NEMO: copy residual to res.buf to apply bilinear interpolation */
   if (eob > 0) {
-    inverse_transform_block_inter(
-        xd, plane, tx_size, &pd->dst.buf[4 * row * pd->dst.stride + 4 * col],
-        pd->dst.stride, eob);
+    if (!cm->apply_dnn(cm)) {
+      inverse_transform_block_inter_copy(
+          xd, plane, tx_size, &pd->dst.buf[4 * row * pd->dst.stride + 4 * col],
+          pd->dst.stride, &pd->res.buf[4 * row * pd->res.stride + 4 * col],
+          pd->res.stride, eob);
+    } else {
+      inverse_transform_block_inter(
+          xd, plane, tx_size, &pd->dst.buf[4 * row * pd->dst.stride + 4 * col],
+          pd->dst.stride, eob);
+    }
   }
   return eob;
 }
@@ -489,34 +583,115 @@ static void extend_and_predict(const uint8_t *buf_ptr1, int pre_buf_stride,
 }
 #endif  // CONFIG_VP9_HIGHBITDEPTH
 
-static void dec_build_inter_predictors(
+/* NEMO: process a up-scaled inter-block */
+static void extend_and_resize_and_predict(
+    const uint8_t *buf_ptr1, int pre_buf_stride, int x0, int y0, int b_w,
+    int b_h, int frame_width, int frame_height, int border_offset,
+    uint8_t *const dst, int dst_buf_stride, int subpel_x, int subpel_y,
+    const InterpKernel *kernel, const struct scale_factors *sf, int w, int h,
+    int ref, int xs, int ys) {
+  DECLARE_ALIGNED(16, uint8_t, mc_buf[160 * 2 * 160 * 2]);
+  const uint8_t *buf_ptr;
+  int w_offset, h_offset;
+
+  build_mc_border(buf_ptr1, pre_buf_stride, mc_buf, b_w, x0, y0, b_w, b_h,
+                  frame_width, frame_height);
+
+  buf_ptr = mc_buf + border_offset;
+
+  int w_proc_size;
+  int h_proc_size;
+  switch (w) {
+    case 4:
+    case 8:
+    case 16:
+    case 32:
+    case 64: w_proc_size = w; break;
+    case 12: w_proc_size = 4; break;
+    case 24: w_proc_size = 8; break;
+    case 48: w_proc_size = 16; break;
+    case 96: w_proc_size = 32; break;
+    case 128: w_proc_size = 64; break;
+    case 192: w_proc_size = 64; break;
+    case 256: w_proc_size = 64; break;
+    default: printf("Invalid w_proc_size\n");
+  }
+  switch (h) {
+    case 4:
+    case 8:
+    case 16:
+    case 32:
+    case 64: h_proc_size = h; break;
+    case 12: h_proc_size = 4; break;
+    case 24: h_proc_size = 8; break;
+    case 48: h_proc_size = 16; break;
+    case 96: h_proc_size = 32; break;
+    case 128: h_proc_size = 64; break;
+    case 192: h_proc_size = 64; break;
+    case 256: h_proc_size = 64; break;
+    default: printf("Invalid h_proc_size\n");
+  }
+
+  int width, height;
+  for (w_offset = 0; w_offset < w; w_offset += w_proc_size) {
+    for (h_offset = 0; h_offset < h; h_offset += h_proc_size) {
+      height = h_proc_size;
+      width = w_proc_size;
+
+      inter_predictor(&buf_ptr[h_offset * b_w + w_offset], b_w,
+                      &dst[h_offset * dst_buf_stride + w_offset],
+                      dst_buf_stride, subpel_x, subpel_y, sf, width, height,
+                      ref, kernel, xs, ys);
+    }
+  }
+}
+
+static void dec_build_sr_inter_predictors(
     MACROBLOCKD *xd, int plane, int bw, int bh, int x, int y, int w, int h,
     int mi_x, int mi_y, const InterpKernel *kernel,
     const struct scale_factors *sf, struct buf_2d *pre_buf,
     struct buf_2d *dst_buf, const MV *mv, RefCntBuffer *ref_frame_buf,
-    int is_scaled, int ref) {
+    int is_scaled, int ref, int is_sr) {
   struct macroblockd_plane *const pd = &xd->plane[plane];
-  uint8_t *const dst = dst_buf->buf + dst_buf->stride * y + x;
+
+  int scale = sf->scale >> REF_SCALE_SHIFT;  // NEMO: setup
+  uint8_t *const dst =
+      is_sr ? dst_buf->buf + dst_buf->stride * scale * y + scale * x
+            : dst_buf->buf + dst_buf->stride * y + x;  // NEMO: setup
   MV32 scaled_mv;
   int xs, ys, x0, y0, x0_16, y0_16, frame_width, frame_height, buf_stride,
       subpel_x, subpel_y;
   uint8_t *ref_frame, *buf_ptr;
+  int w_offset, h_offset;
 
-  // Get reference frame pointer, width and height.
-  if (plane == 0) {
-    frame_width = ref_frame_buf->buf.y_crop_width;
-    frame_height = ref_frame_buf->buf.y_crop_height;
-    ref_frame = ref_frame_buf->buf.y_buffer;
+  /* NEMO: setup */
+  if (is_sr) {
+    if (plane == 0) {
+      frame_width = ref_frame_buf->sr_buf.y_crop_width;
+      frame_height = ref_frame_buf->sr_buf.y_crop_height;
+      ref_frame = ref_frame_buf->sr_buf.y_buffer;
+    } else {
+      frame_width = ref_frame_buf->sr_buf.uv_crop_width;
+      frame_height = ref_frame_buf->sr_buf.uv_crop_height;
+      ref_frame = plane == 1 ? ref_frame_buf->sr_buf.u_buffer
+                             : ref_frame_buf->sr_buf.v_buffer;
+    }
   } else {
-    frame_width = ref_frame_buf->buf.uv_crop_width;
-    frame_height = ref_frame_buf->buf.uv_crop_height;
-    ref_frame =
-        plane == 1 ? ref_frame_buf->buf.u_buffer : ref_frame_buf->buf.v_buffer;
+    if (plane == 0) {
+      frame_width = ref_frame_buf->buf.y_crop_width;
+      frame_height = ref_frame_buf->buf.y_crop_height;
+      ref_frame = ref_frame_buf->buf.y_buffer;
+    } else {
+      frame_width = ref_frame_buf->buf.uv_crop_width;
+      frame_height = ref_frame_buf->buf.uv_crop_height;
+      ref_frame = plane == 1 ? ref_frame_buf->buf.u_buffer
+                             : ref_frame_buf->buf.v_buffer;
+    }
   }
 
   if (is_scaled) {
-    const MV mv_q4 = clamp_mv_to_umv_border_sb(
-        xd, mv, bw, bh, pd->subsampling_x, pd->subsampling_y);
+    MV mv_q4 = clamp_mv_to_umv_border_sb(xd, mv, bw, bh, pd->subsampling_x,
+                                         pd->subsampling_y);
     // Co-ordinate of containing block to pixel precision.
     int x_start = (-xd->mb_to_left_edge >> (3 + pd->subsampling_x));
     int y_start = (-xd->mb_to_top_edge >> (3 + pd->subsampling_y));
@@ -541,7 +716,18 @@ static void dec_build_inter_predictors(
 
     // Scale the MV and incorporate the sub-pixel offset of the block
     // in the reference frame.
-    scaled_mv = vp9_scale_mv(&mv_q4, mi_x + x, mi_y + y, sf);
+
+    // if (mv_q4.row > -16 && mv_q4.row < 0) mv_q4.row = 0;
+    // if (mv_q4.col > -16 && mv_q4.col < 0) mv_q4.col = 0;
+
+#if TURN_OFF_MV
+    scaled_mv;
+    scaled_mv.row = 0;
+    scaled_mv.col = 0;
+#else
+    scaled_mv = vp9_scale_nemo_mv(&mv_q4, mi_x + x, mi_y + y,
+                                  sf);  // NEMO: up-scale a motion vector
+#endif
     xs = sf->x_step_q4;
     ys = sf->y_step_q4;
   } else {
@@ -570,6 +756,12 @@ static void dec_build_inter_predictors(
   // Get reference block pointer.
   buf_ptr = ref_frame + y0 * pre_buf->stride + x0;
   buf_stride = pre_buf->stride;
+
+  /* NEMO: setup */
+  if (is_sr) {
+    w = w * scale;
+    h = h * scale;
+  }
 
   // Do border extension if there is motion or the
   // width/height is not a multiple of 8 pixels.
@@ -602,13 +794,25 @@ static void dec_build_inter_predictors(
       const int b_h = y1 - y0 + 1;
       const int border_offset = y_pad * 3 * b_w + x_pad * 3;
 
-      extend_and_predict(buf_ptr1, buf_stride, x0, y0, b_w, b_h, frame_width,
-                         frame_height, border_offset, dst, dst_buf->stride,
-                         subpel_x, subpel_y, kernel, sf,
+      /* NEMO: transfer super-resoluted pixels */
+      if (is_sr) {
+        extend_and_resize_and_predict(
+            buf_ptr1, buf_stride, x0, y0, b_w, b_h, frame_width, frame_height,
+            border_offset, dst, dst_buf->stride, subpel_x, subpel_y, kernel, sf,
 #if CONFIG_VP9_HIGHBITDEPTH
-                         xd,
+            xd,
 #endif
-                         w, h, ref, xs, ys);
+            w, h, ref, xs, ys);
+      } else {
+        extend_and_predict(buf_ptr1, buf_stride, x0, y0, b_w, b_h, frame_width,
+                           frame_height, border_offset, dst, dst_buf->stride,
+                           subpel_x, subpel_y, kernel, sf,
+#if CONFIG_VP9_HIGHBITDEPTH
+                           xd,
+#endif
+                           w, h, ref, xs, ys);
+      }
+
       return;
     }
   }
@@ -622,14 +826,68 @@ static void dec_build_inter_predictors(
                     subpel_y, sf, w, h, ref, kernel, xs, ys);
   }
 #else
-  inter_predictor(buf_ptr, buf_stride, dst, dst_buf->stride, subpel_x, subpel_y,
-                  sf, w, h, ref, kernel, xs, ys);
+
+  /* NEMO: transfer super-resoluted pixels */
+  if (is_sr) {
+    int w_proc_size;
+    int h_proc_size;
+    switch (w) {
+      case 4:
+      case 8:
+      case 16:
+      case 32:
+      case 64: w_proc_size = w; break;
+      case 12: w_proc_size = 4; break;
+      case 24: w_proc_size = 8; break;
+      case 48: w_proc_size = 16; break;
+      case 96: w_proc_size = 32; break;
+      case 128: w_proc_size = 64; break;
+      case 192: w_proc_size = 64; break;
+      case 256: w_proc_size = 64; break;
+      default: printf("Invalid w_proc_size\n");
+    }
+    switch (h) {
+      case 4:
+      case 8:
+      case 16:
+      case 32:
+      case 64: h_proc_size = h; break;
+      case 12: h_proc_size = 4; break;
+      case 24: h_proc_size = 8; break;
+      case 48: h_proc_size = 16; break;
+      case 96: h_proc_size = 32; break;
+      case 128: h_proc_size = 64; break;
+      case 192: h_proc_size = 64; break;
+      case 256: h_proc_size = 64; break;
+      default: printf("Invalid h_proc_size\n");
+    }
+
+    int width, height;
+    for (w_offset = 0; w_offset < w; w_offset += w_proc_size) {
+      for (h_offset = 0; h_offset < h; h_offset += h_proc_size) {
+        // calculate height, width
+        height = h_proc_size;
+        width = w_proc_size;
+
+        inter_predictor(&buf_ptr[h_offset * buf_stride + w_offset], buf_stride,
+                        &dst[h_offset * dst_buf->stride + w_offset],
+                        dst_buf->stride, subpel_x, subpel_y, sf, width, height,
+                        ref, kernel, xs, ys);
+      }
+    }
+
+  } else {
+    inter_predictor(buf_ptr, buf_stride, dst, dst_buf->stride, subpel_x,
+                    subpel_y, sf, w, h, ref, kernel, xs, ys);
+  }
 #endif  // CONFIG_VP9_HIGHBITDEPTH
 }
 
-static void dec_build_inter_predictors_sb(VP9Decoder *const pbi,
-                                          MACROBLOCKD *xd, int mi_row,
-                                          int mi_col) {
+/* NEMO: is_sr == true, then decode and transfer super-resoluted frames, is_sr
+ * == false, then decode */
+static void dec_build_nemo_inter_predictors_sb(VP9Decoder *const pbi,
+                                               MACROBLOCKD *xd, int mi_row,
+                                               int mi_col, int is_sr) {
   int plane;
   const int mi_x = mi_col * MI_SIZE;
   const int mi_y = mi_row * MI_SIZE;
@@ -643,37 +901,49 @@ static void dec_build_inter_predictors_sb(VP9Decoder *const pbi,
   for (ref = 0; ref < 1 + is_compound; ++ref) {
     const MV_REFERENCE_FRAME frame = mi->ref_frame[ref];
     RefBuffer *ref_buf = &pbi->common.frame_refs[frame - LAST_FRAME];
-    const struct scale_factors *const sf = &ref_buf->sf;
     const int idx = ref_buf->idx;
+    const struct scale_factors *sf;
+    if (is_sr)
+      sf = &ref_buf->sf_sr;  // NEMO: setup
+    else
+      sf = &ref_buf->sf;  // NEMO: setup
     BufferPool *const pool = pbi->common.buffer_pool;
     RefCntBuffer *const ref_frame_buf = &pool->frame_bufs[idx];
 
-    if (!vp9_is_valid_scale(sf))
-      vpx_internal_error(xd->error_info, VPX_CODEC_UNSUP_BITSTREAM,
-                         "Reference frame has invalid dimensions");
-
     is_scaled = vp9_is_scaled(sf);
-    vp9_setup_pre_planes(xd, ref, ref_buf->buf, mi_row, mi_col,
-                         is_scaled ? sf : NULL);
+    if (is_sr)
+      vp9_setup_pre_planes(xd, ref, ref_buf->buf_sr, mi_row, mi_col,
+                           is_scaled ? sf : NULL);
+    else
+      vp9_setup_pre_planes(xd, ref, ref_buf->buf, mi_row, mi_col,
+                           is_scaled ? sf : NULL);
     xd->block_refs[ref] = ref_buf;
 
     if (sb_type < BLOCK_8X8) {
       for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
         struct macroblockd_plane *const pd = &xd->plane[plane];
-        struct buf_2d *const dst_buf = &pd->dst;
+        struct buf_2d *dst_buf;
+        /* NEMO: setup */
+        if (is_sr) {
+          dst_buf = &pd->sr;
+        } else {
+          dst_buf = &pd->dst;
+        }
         const int num_4x4_w = pd->n4_w;
         const int num_4x4_h = pd->n4_h;
         const int n4w_x4 = 4 * num_4x4_w;
         const int n4h_x4 = 4 * num_4x4_h;
         struct buf_2d *const pre_buf = &pd->pre[ref];
         int i = 0, x, y;
+        /* NEMO: decode an inter-blocks and/or transfer super-resoluted pixels
+         */
         for (y = 0; y < num_4x4_h; ++y) {
           for (x = 0; x < num_4x4_w; ++x) {
             const MV mv = average_split_mvs(pd, mi, ref, i++);
-            dec_build_inter_predictors(xd, plane, n4w_x4, n4h_x4, 4 * x, 4 * y,
-                                       4, 4, mi_x, mi_y, kernel, sf, pre_buf,
-                                       dst_buf, &mv, ref_frame_buf, is_scaled,
-                                       ref);
+            dec_build_sr_inter_predictors(xd, plane, n4w_x4, n4h_x4, 4 * x,
+                                          4 * y, 4, 4, mi_x, mi_y, kernel, sf,
+                                          pre_buf, dst_buf, &mv, ref_frame_buf,
+                                          is_scaled, ref, is_sr);
           }
         }
       }
@@ -681,15 +951,23 @@ static void dec_build_inter_predictors_sb(VP9Decoder *const pbi,
       const MV mv = mi->mv[ref].as_mv;
       for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
         struct macroblockd_plane *const pd = &xd->plane[plane];
-        struct buf_2d *const dst_buf = &pd->dst;
+        struct buf_2d *dst_buf;
+        /* NEMO: setup */
+        if (is_sr) {
+          dst_buf = &pd->sr;
+        } else {
+          dst_buf = &pd->dst;
+        }
         const int num_4x4_w = pd->n4_w;
         const int num_4x4_h = pd->n4_h;
         const int n4w_x4 = 4 * num_4x4_w;
         const int n4h_x4 = 4 * num_4x4_h;
         struct buf_2d *const pre_buf = &pd->pre[ref];
-        dec_build_inter_predictors(xd, plane, n4w_x4, n4h_x4, 0, 0, n4w_x4,
-                                   n4h_x4, mi_x, mi_y, kernel, sf, pre_buf,
-                                   dst_buf, &mv, ref_frame_buf, is_scaled, ref);
+        /* NEMO: decode an inter-blocks and/or transfer super-resoluted pixels
+         */
+        dec_build_sr_inter_predictors(
+            xd, plane, n4w_x4, n4h_x4, 0, 0, n4w_x4, n4h_x4, mi_x, mi_y, kernel,
+            sf, pre_buf, dst_buf, &mv, ref_frame_buf, is_scaled, ref, is_sr);
       }
     }
   }
@@ -754,7 +1032,9 @@ static void decode_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
   const int y_mis = VPXMIN(bh, cm->mi_rows - mi_row);
   vpx_reader *r = &twd->bit_reader;
   MACROBLOCKD *const xd = &twd->xd;
+  nemo_worker_data_t *mwd = twd->nemo_worker_data;
 
+  mwd->metadata.num_blocks++;
   MODE_INFO *mi = set_offsets(cm, xd, bsize, mi_row, mi_col, bw, bh, x_mis,
                               y_mis, bwl, bhl);
 
@@ -773,6 +1053,7 @@ static void decode_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
   }
 
   if (!is_inter_block(mi)) {
+    mwd->metadata.num_intrablocks++;
     int plane;
     for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
       const struct macroblockd_plane *const pd = &xd->plane[plane];
@@ -797,44 +1078,75 @@ static void decode_block(TileWorkerData *twd, VP9Decoder *const pbi, int mi_row,
         for (col = 0; col < max_blocks_wide; col += step)
           predict_and_reconstruct_intra_block(twd, mi, plane, row, col,
                                               tx_size);
+      /* NEMO: add an intra-block to intra_block_list for applying
+       * bilinear_interpolation */
+      if (!cm->apply_dnn(cm)) {
+        if (plane == 0)
+          create_nemo_interp_block(mwd->intra_block_list, mi_col, mi_row,
+                                   max_blocks_wide, max_blocks_high);
+        else
+          set_nemo_interp_block(mwd->intra_block_list, plane, max_blocks_wide,
+                                max_blocks_high);
+      }
     }
   } else {
-    // Prediction
-    dec_build_inter_predictors_sb(pbi, xd, mi_row, mi_col);
+    mwd->metadata.num_interblocks++;
+    /* NEMO: decode an inter-block */
+    dec_build_nemo_inter_predictors_sb(pbi, xd, mi_row, mi_col, false);
 
+    /* NEMO: transfer super-resoluted pixels */
+    if (!cm->apply_dnn(cm)) {
+      vp9_setup_sr_planes(xd->plane, get_sr_frame_new_buffer(cm), mi_row,
+                          mi_col, &cm->sf_upsample_inter);  // check: sr frame
+      vp9_setup_res_planes(xd->plane, mwd->lr_resiudal, mi_row, mi_col);
+      dec_build_nemo_inter_predictors_sb(pbi, xd, mi_row, mi_col, true);
+    }
     // Reconstruction
     if (!mi->skip) {
-      int eobtotal = 0;
-      int plane;
+      mwd->metadata.num_noskip_interblocks++;
+    }
 
-      for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
-        const struct macroblockd_plane *const pd = &xd->plane[plane];
-        const TX_SIZE tx_size = plane ? get_uv_tx_size(mi, pd) : mi->tx_size;
-        const int num_4x4_w = pd->n4_w;
-        const int num_4x4_h = pd->n4_h;
-        const int step = (1 << tx_size);
-        int row, col;
-        const int max_blocks_wide =
-            num_4x4_w + (xd->mb_to_right_edge >= 0
-                             ? 0
-                             : xd->mb_to_right_edge >> (5 + pd->subsampling_x));
-        const int max_blocks_high =
-            num_4x4_h +
-            (xd->mb_to_bottom_edge >= 0
-                 ? 0
-                 : xd->mb_to_bottom_edge >> (5 + pd->subsampling_y));
+    int eobtotal = 0;
+    int plane;
 
-        xd->max_blocks_wide = xd->mb_to_right_edge >= 0 ? 0 : max_blocks_wide;
-        xd->max_blocks_high = xd->mb_to_bottom_edge >= 0 ? 0 : max_blocks_high;
+    for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
+      const struct macroblockd_plane *const pd = &xd->plane[plane];
+      const TX_SIZE tx_size = plane ? get_uv_tx_size(mi, pd) : mi->tx_size;
+      const int num_4x4_w = pd->n4_w;
+      const int num_4x4_h = pd->n4_h;
+      const int step = (1 << tx_size);
+      int row, col;
+      const int max_blocks_wide =
+          num_4x4_w + (xd->mb_to_right_edge >= 0
+                           ? 0
+                           : xd->mb_to_right_edge >> (5 + pd->subsampling_x));
+      const int max_blocks_high =
+          num_4x4_h + (xd->mb_to_bottom_edge >= 0
+                           ? 0
+                           : xd->mb_to_bottom_edge >> (5 + pd->subsampling_y));
 
+      xd->max_blocks_wide = xd->mb_to_right_edge >= 0 ? 0 : max_blocks_wide;
+      xd->max_blocks_high = xd->mb_to_bottom_edge >= 0 ? 0 : max_blocks_high;
+
+      if (!mi->skip) {
         for (row = 0; row < max_blocks_high; row += step)
           for (col = 0; col < max_blocks_wide; col += step)
             eobtotal +=
-                reconstruct_inter_block(twd, mi, plane, row, col, tx_size);
+                reconstruct_inter_block(twd, mi, plane, row, col, tx_size, cm);
+        /* NEMO: add an inter-block to inter_block_list for apply
+         * bilinear-interpolation */
+        if (!cm->apply_dnn(cm)) {
+          if (plane == 0)
+            create_nemo_interp_block(mwd->inter_block_list, mi_col, mi_row,
+                                     max_blocks_wide, max_blocks_high);
+          else
+            set_nemo_interp_block(mwd->inter_block_list, plane, max_blocks_wide,
+                                  max_blocks_high);
+        }
       }
-
-      if (!less8x8 && eobtotal == 0) mi->skip = 1;  // skip loopfilter
     }
+    if (!less8x8 && eobtotal == 0 && !mi->skip)
+      mi->skip = 1;  // skip loopfilter
   }
 
   xd->corrupted |= vpx_reader_has_error(r);
@@ -1164,6 +1476,19 @@ static void resize_context_buffers(VP9_COMMON *cm, int width, int height) {
   }
 }
 
+static void setup_residual_size(VP9_COMMON *cm, YV12_BUFFER_CONFIG *frame) {
+  if (vpx_realloc_frame_buffer(frame, cm->width * 2, cm->height,
+                               cm->subsampling_x, cm->subsampling_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+                               cm->use_highbitdepth,
+#endif
+                               VP9_DEC_BORDER_IN_PIXELS * 2, cm->byte_alignment,
+                               NULL, NULL, NULL)) {
+    vpx_internal_error(&cm->error, VPX_CODEC_MEM_ERROR,
+                       "%s: Failed to allocate resized frame buffer", __func__);
+  };
+}
+
 static void setup_frame_size(VP9_COMMON *cm, struct vpx_read_bit_buffer *rb) {
   int width, height;
   BufferPool *const pool = cm->buffer_pool;
@@ -1192,6 +1517,42 @@ static void setup_frame_size(VP9_COMMON *cm, struct vpx_read_bit_buffer *rb) {
   pool->frame_bufs[cm->new_fb_idx].buf.color_range = cm->color_range;
   pool->frame_bufs[cm->new_fb_idx].buf.render_width = cm->render_width;
   pool->frame_bufs[cm->new_fb_idx].buf.render_height = cm->render_height;
+
+  /* NEMO */
+  pool->frame_bufs[cm->new_fb_idx].current_video_frame =
+      cm->current_video_frame;
+  pool->frame_bufs[cm->new_fb_idx].current_super_frame =
+      cm->current_super_frame;
+}
+
+static void setup_sr_frame_size(VP9_COMMON *cm) {
+  BufferPool *const pool = cm->buffer_pool;
+
+  YV12_BUFFER_CONFIG *frame = get_frame_new_buffer(cm);
+  if (vpx_realloc_scaled_frame_buffer(
+          get_sr_frame_new_buffer(cm), frame->y_width,  // check: sr frame
+          frame->y_crop_width, frame->y_height, frame->y_crop_height, cm->scale,
+          cm->subsampling_x, cm->subsampling_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+          cm->use_highbitdepth,
+#endif
+          VP9_DEC_BORDER_IN_PIXELS * cm->scale, cm->byte_alignment,
+          &pool->frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer,
+          pool->get_fb_cb, pool->cb_priv)) {
+    vpx_internal_error(&cm->error, VPX_CODEC_MEM_ERROR,
+                       "Failed to allocate frame buffer");
+  }
+
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.subsampling_x = cm->subsampling_x;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.subsampling_y = cm->subsampling_y;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.bit_depth =
+      (unsigned int)cm->bit_depth;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.color_space = cm->color_space;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.color_range = cm->color_range;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.render_width =
+      cm->render_width * cm->scale;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.render_height =
+      cm->render_height * cm->scale;
 }
 
 static INLINE int valid_ref_frame_img_fmt(vpx_bit_depth_t ref_bit_depth,
@@ -1276,6 +1637,41 @@ static void setup_frame_size_with_refs(VP9_COMMON *cm,
   pool->frame_bufs[cm->new_fb_idx].buf.color_range = cm->color_range;
   pool->frame_bufs[cm->new_fb_idx].buf.render_width = cm->render_width;
   pool->frame_bufs[cm->new_fb_idx].buf.render_height = cm->render_height;
+
+  /* NEMO */
+  pool->frame_bufs[cm->new_fb_idx].current_video_frame =
+      cm->current_video_frame;
+  pool->frame_bufs[cm->new_fb_idx].current_super_frame =
+      cm->current_super_frame;
+}
+
+static void setup_sr_frame_size_with_refs(VP9_COMMON *cm) {
+  BufferPool *const pool = cm->buffer_pool;
+  YV12_BUFFER_CONFIG *frame = get_frame_new_buffer(cm);
+  if (vpx_realloc_scaled_frame_buffer(
+          get_sr_frame_new_buffer(cm), frame->y_width,  // check: sr frame
+          frame->y_crop_width, frame->y_height, frame->y_crop_height, cm->scale,
+          cm->subsampling_x, cm->subsampling_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+          cm->use_highbitdepth,
+#endif
+          VP9_DEC_BORDER_IN_PIXELS * cm->scale, cm->byte_alignment,
+          &pool->frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer,
+          pool->get_fb_cb, pool->cb_priv)) {
+    vpx_internal_error(&cm->error, VPX_CODEC_MEM_ERROR,
+                       "Failed to allocate frame buffer");
+  }
+
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.subsampling_x = cm->subsampling_x;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.subsampling_y = cm->subsampling_y;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.bit_depth =
+      (unsigned int)cm->bit_depth;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.color_space = cm->color_space;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.color_range = cm->color_range;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.render_width =
+      cm->render_width * cm->scale;
+  pool->frame_bufs[cm->new_fb_idx].sr_buf.render_height =
+      cm->render_height * cm->scale;
 }
 
 static void setup_tile_info(VP9_COMMON *cm, struct vpx_read_bit_buffer *rb) {
@@ -1346,6 +1742,114 @@ static void get_tile_buffers(VP9Decoder *pbi, const uint8_t *data,
                       pbi->decrypt_cb, pbi->decrypt_state, buf);
     }
   }
+}
+
+static void upscale_block_by_bilinear_interp(VP9Decoder *pbi) {
+  /* NEMO: setup */
+  VP9_COMMON *cm = &pbi->common;
+  nemo_worker_data_t *mwd = pbi->nemo_worker_data;
+  YV12_BUFFER_CONFIG *lr_frame = get_frame_new_buffer(cm);
+  YV12_BUFFER_CONFIG *sr_frame = get_sr_frame_new_buffer(cm);  // check: sr
+                                                               // frame
+  YV12_BUFFER_CONFIG *lr_residual = mwd->lr_resiudal;
+  int plane;
+  uint8_t *const lr_frame_buffers[MAX_MB_PLANE] = { lr_frame->y_buffer,
+                                                    lr_frame->u_buffer,
+                                                    lr_frame->v_buffer };
+  const int lr_frame_strides[MAX_MB_PLANE] = { lr_frame->y_stride,
+                                               lr_frame->uv_stride,
+                                               lr_frame->uv_stride };
+  int16_t *const lr_residual_buffers[MAX_MB_PLANE] = {
+    (int16_t *)lr_residual->y_buffer, (int16_t *)lr_residual->u_buffer,
+    (int16_t *)lr_residual->v_buffer
+  };
+  const int lr_residual_strides[MAX_MB_PLANE] = { lr_residual->y_stride / 2,
+                                                  lr_residual->uv_stride / 2,
+                                                  lr_residual->uv_stride / 2 };
+  uint8_t *const sr_frame_buffers[MAX_MB_PLANE] = { sr_frame->y_buffer,
+                                                    sr_frame->u_buffer,
+                                                    sr_frame->v_buffer };
+  const int sr_frame_strides[MAX_MB_PLANE] = { sr_frame->y_stride,
+                                               sr_frame->uv_stride,
+                                               sr_frame->uv_stride };
+  const int max_heights[MAX_MB_PLANE] = { lr_frame->y_crop_height,
+                                          lr_frame->uv_crop_height,
+                                          lr_frame->uv_crop_height };
+  const int max_widths[MAX_MB_PLANE] = { lr_frame->y_crop_width,
+                                         lr_frame->uv_crop_width,
+                                         lr_frame->uv_crop_width };
+  nemo_interp_block_t *intra_block = mwd->intra_block_list->head;
+  nemo_interp_block_t *prev_block = NULL;
+
+  /* NEMO: up-scale intra blocks */
+  while (intra_block != NULL) {
+    const int widths[MAX_MB_PLANE] = { intra_block->n4_w[0] * 4,
+                                       intra_block->n4_w[1] * 4,
+                                       intra_block->n4_w[2] * 4 };
+    const int heights[MAX_MB_PLANE] = { intra_block->n4_h[0] * 4,
+                                        intra_block->n4_h[1] * 4,
+                                        intra_block->n4_h[2] * 4 };
+    const int x_offsets[MAX_MB_PLANE] = {
+      intra_block->mi_col * MI_BLOCK_SIZE,
+      intra_block->mi_col * MI_BLOCK_SIZE >> lr_frame->subsampling_x,
+      intra_block->mi_col * MI_BLOCK_SIZE >> lr_frame->subsampling_x
+    };
+    const int y_offsets[MAX_MB_PLANE] = {
+      intra_block->mi_row * MI_BLOCK_SIZE,
+      intra_block->mi_row * MI_BLOCK_SIZE >> lr_frame->subsampling_y,
+      intra_block->mi_row * MI_BLOCK_SIZE >> lr_frame->subsampling_y
+    };
+
+    for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
+      vpx_bilinear_interp_uint8(
+          lr_frame_buffers[plane], lr_frame_strides[plane],
+          sr_frame_buffers[plane], sr_frame_strides[plane], x_offsets[plane],
+          y_offsets[plane], widths[plane], heights[plane], cm->scale,
+          cm->nemo_cfg->bilinear_coeff);
+    }
+    prev_block = intra_block;
+    intra_block = intra_block->next;
+    vpx_free(prev_block);
+  }
+  mwd->intra_block_list->head = NULL;
+  mwd->intra_block_list->tail = NULL;
+
+  nemo_interp_block_t *inter_block = mwd->inter_block_list->head;
+  /* NEMO: up-scale residual of inter-blocks */
+  while (inter_block != NULL) {
+    const int widths[MAX_MB_PLANE] = { inter_block->n4_w[0] * 4,
+                                       inter_block->n4_w[1] * 4,
+                                       inter_block->n4_w[2] * 4 };
+    const int heights[MAX_MB_PLANE] = { inter_block->n4_h[0] * 4,
+                                        inter_block->n4_h[1] * 4,
+                                        inter_block->n4_h[2] * 4 };
+    const int x_offsets[MAX_MB_PLANE] = {
+      inter_block->mi_col * MI_BLOCK_SIZE,
+      inter_block->mi_col * MI_BLOCK_SIZE >> lr_residual->subsampling_x,
+      inter_block->mi_col * MI_BLOCK_SIZE >> lr_residual->subsampling_x
+    };
+    const int y_offsets[MAX_MB_PLANE] = {
+      inter_block->mi_row * MI_BLOCK_SIZE,
+      inter_block->mi_row * MI_BLOCK_SIZE >> lr_residual->subsampling_y,
+      inter_block->mi_row * MI_BLOCK_SIZE >> lr_residual->subsampling_y
+    };
+
+#if !TURN_OFF_RESIDUAL
+    for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
+      vpx_bilinear_interp_int16(
+          lr_residual_buffers[plane], lr_residual_strides[plane],
+          sr_frame_buffers[plane], sr_frame_strides[plane], x_offsets[plane],
+          y_offsets[plane], widths[plane], heights[plane], cm->scale,
+          cm->nemo_cfg->bilinear_coeff);
+    }
+#endif
+
+    prev_block = inter_block;
+    inter_block = inter_block->next;
+    vpx_free(prev_block);
+  }
+  mwd->inter_block_list->head = NULL;
+  mwd->inter_block_list->tail = NULL;
 }
 
 static const uint8_t *decode_tiles(VP9Decoder *pbi, const uint8_t *data,
@@ -1524,6 +2028,113 @@ static int tile_worker_hook(void *arg1, void *arg2) {
   return !tile_data->xd.corrupted;
 }
 
+static int nemo_worker_hook(void *arg1, void *arg2) {
+  TileWorkerData *const tile_data = (TileWorkerData *)arg1;
+  VP9Decoder *const pbi = (VP9Decoder *)arg2;
+  VP9_COMMON *cm = &pbi->common;
+  nemo_worker_data_t *mwd = tile_data->nemo_worker_data;
+  int plane;
+
+  /* NEMO: setup */
+  YV12_BUFFER_CONFIG *lr_frame = get_frame_new_buffer(cm);
+  YV12_BUFFER_CONFIG *sr_frame = get_sr_frame_new_buffer(cm);  // check: sr
+                                                               // frame
+  YV12_BUFFER_CONFIG *lr_residual = mwd->lr_resiudal;
+  uint8_t *const lr_frame_buffers[MAX_MB_PLANE] = { lr_frame->y_buffer,
+                                                    lr_frame->u_buffer,
+                                                    lr_frame->v_buffer };
+  const int lr_frame_strides[MAX_MB_PLANE] = { lr_frame->y_stride,
+                                               lr_frame->uv_stride,
+                                               lr_frame->uv_stride };
+  int16_t *const lr_residual_buffers[MAX_MB_PLANE] = {
+    (int16_t *)lr_residual->y_buffer, (int16_t *)lr_residual->u_buffer,
+    (int16_t *)lr_residual->v_buffer
+  };
+  const int lr_residual_strides[MAX_MB_PLANE] = { lr_residual->y_stride / 2,
+                                                  lr_residual->uv_stride / 2,
+                                                  lr_residual->uv_stride / 2 };
+  uint8_t *const sr_frame_buffers[MAX_MB_PLANE] = { sr_frame->y_buffer,
+                                                    sr_frame->u_buffer,
+                                                    sr_frame->v_buffer };
+  const int sr_frame_strides[MAX_MB_PLANE] = { sr_frame->y_stride,
+                                               sr_frame->uv_stride,
+                                               sr_frame->uv_stride };
+
+  /* NEMO: up-scale intra-blocks */
+  nemo_interp_block_t *intra_block = mwd->intra_block_list->head;
+  nemo_interp_block_t *prev_block = NULL;
+  while (intra_block != NULL) {
+    const int widths[MAX_MB_PLANE] = { intra_block->n4_w[0] * 4,
+                                       intra_block->n4_w[1] * 4,
+                                       intra_block->n4_w[2] * 4 };
+    const int heights[MAX_MB_PLANE] = { intra_block->n4_h[0] * 4,
+                                        intra_block->n4_h[1] * 4,
+                                        intra_block->n4_h[2] * 4 };
+    const int x_offsets[MAX_MB_PLANE] = {
+      intra_block->mi_col * MI_BLOCK_SIZE,
+      intra_block->mi_col * MI_BLOCK_SIZE >> lr_frame->subsampling_x,
+      intra_block->mi_col * MI_BLOCK_SIZE >> lr_frame->subsampling_x
+    };
+    const int y_offsets[MAX_MB_PLANE] = {
+      intra_block->mi_row * MI_BLOCK_SIZE,
+      intra_block->mi_row * MI_BLOCK_SIZE >> lr_frame->subsampling_y,
+      intra_block->mi_row * MI_BLOCK_SIZE >> lr_frame->subsampling_y
+    };
+
+    for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
+      vpx_bilinear_interp_uint8(
+          lr_frame_buffers[plane], lr_frame_strides[plane],
+          sr_frame_buffers[plane], sr_frame_strides[plane], x_offsets[plane],
+          y_offsets[plane], widths[plane], heights[plane], cm->scale,
+          cm->nemo_cfg->bilinear_coeff);
+    }
+    prev_block = intra_block;
+    intra_block = intra_block->next;
+    vpx_free(prev_block);
+  }
+  mwd->intra_block_list->head = NULL;
+  mwd->intra_block_list->tail = NULL;
+
+  /* NEMO: up-scale residual of inter-blocks */
+  nemo_interp_block_t *inter_block = mwd->inter_block_list->head;
+  while (inter_block != NULL) {
+    const int widths[MAX_MB_PLANE] = { inter_block->n4_w[0] * 4,
+                                       inter_block->n4_w[1] * 4,
+                                       inter_block->n4_w[2] * 4 };
+    const int heights[MAX_MB_PLANE] = { inter_block->n4_h[0] * 4,
+                                        inter_block->n4_h[1] * 4,
+                                        inter_block->n4_h[2] * 4 };
+    const int x_offsets[MAX_MB_PLANE] = {
+      inter_block->mi_col * MI_BLOCK_SIZE,
+      inter_block->mi_col * MI_BLOCK_SIZE >> lr_residual->subsampling_x,
+      inter_block->mi_col * MI_BLOCK_SIZE >> lr_residual->subsampling_x
+    };
+    const int y_offsets[MAX_MB_PLANE] = {
+      inter_block->mi_row * MI_BLOCK_SIZE,
+      inter_block->mi_row * MI_BLOCK_SIZE >> lr_residual->subsampling_y,
+      inter_block->mi_row * MI_BLOCK_SIZE >> lr_residual->subsampling_y
+    };
+
+#if !TURN_OFF_RESIDUAL
+    for (plane = 0; plane < MAX_MB_PLANE; ++plane) {
+      vpx_bilinear_interp_int16(
+          lr_residual_buffers[plane], lr_residual_strides[plane],
+          sr_frame_buffers[plane], sr_frame_strides[plane], x_offsets[plane],
+          y_offsets[plane], widths[plane], heights[plane], cm->scale,
+          cm->nemo_cfg->bilinear_coeff);
+    }
+#endif
+
+    prev_block = inter_block;
+    inter_block = inter_block->next;
+    vpx_free(prev_block);
+  }
+  mwd->inter_block_list->head = NULL;
+  mwd->inter_block_list->tail = NULL;
+
+  return 1;
+}
+
 // sorts in descending order
 static int compare_tile_buffers(const void *a, const void *b) {
   const TileBuffer *const buf1 = (const TileBuffer *)a;
@@ -1567,6 +2178,7 @@ static const uint8_t *decode_tiles_mt(VP9Decoder *pbi, const uint8_t *data,
     VPxWorker *const worker = &pbi->tile_workers[n];
     TileWorkerData *const tile_data =
         &pbi->tile_worker_data[n + pbi->total_tiles];
+    tile_data->nemo_worker_data = &pbi->nemo_worker_data[n];  // NEMO
     winterface->sync(worker);
     tile_data->xd = pbi->mb;
     tile_data->xd.counts =
@@ -1673,6 +2285,74 @@ static const uint8_t *decode_tiles_mt(VP9Decoder *pbi, const uint8_t *data,
 
   assert(bit_reader_end || pbi->mb.corrupted);
   return bit_reader_end;
+}
+
+static void upscale_block_by_bilinear_interp_mt(VP9Decoder *pbi) {
+  VP9_COMMON *const cm = &pbi->common;
+  const VPxWorkerInterface *const winterface = vpx_get_worker_interface();
+  const uint8_t *bit_reader_end = NULL;
+  const int tile_cols = 1 << cm->log2_tile_cols;
+  const int tile_rows = 1 << cm->log2_tile_rows;
+  const int num_workers = VPXMIN(pbi->max_threads, tile_cols);
+  int n;
+
+  assert(tile_cols <= (1 << 6));
+  assert(tile_rows == 1);
+  (void)tile_rows;
+
+  if (pbi->num_tile_workers == 0) {
+    const int num_threads = pbi->max_threads;
+    CHECK_MEM_ERROR(cm, pbi->tile_workers,
+                    vpx_malloc(num_threads * sizeof(*pbi->tile_workers)));
+    for (n = 0; n < num_threads; ++n) {
+      VPxWorker *const worker = &pbi->tile_workers[n];
+      ++pbi->num_tile_workers;
+
+      winterface->init(worker);
+      if (n < num_threads - 1 && !winterface->reset(worker)) {
+        vpx_internal_error(&cm->error, VPX_CODEC_ERROR,
+                           "Tile decoder thread creation failed");
+      }
+    }
+  }
+
+  // Reset tile decoding hook
+  for (n = 0; n < num_workers; ++n) {
+    VPxWorker *const worker = &pbi->tile_workers[n];
+    TileWorkerData *const tile_data =
+        &pbi->tile_worker_data[n + pbi->total_tiles];
+    tile_data->nemo_worker_data = &pbi->nemo_worker_data[n];  // NEMO
+    winterface->sync(worker);
+    worker->hook = nemo_worker_hook;
+    worker->data1 = tile_data;
+    worker->data2 = pbi;
+  }
+
+  {
+    const int base = tile_cols / num_workers;
+    const int remain = tile_cols % num_workers;
+
+    for (n = 0; n < num_workers; ++n) {
+      VPxWorker *const worker = &pbi->tile_workers[n];
+      worker->had_error = 0;
+      if (n == num_workers - 1) {
+        winterface->execute(worker);
+      } else {
+        winterface->launch(worker);
+      }
+    }
+
+    for (; n > 0; --n) {
+      VPxWorker *const worker = &pbi->tile_workers[n - 1];
+      TileWorkerData *const tile_data = (TileWorkerData *)worker->data1;
+      // TODO(jzern): The tile may have specific error data associated with
+      // its vpx_internal_error_info which could be propagated to the main info
+      // in cm. Additionally once the threads have been synced and an error is
+      // detected, there's no point in continuing to decode tiles.
+      pbi->mb.corrupted |= !winterface->sync(worker);
+      if (!bit_reader_end) bit_reader_end = tile_data->data_end;
+    }
+  }
 }
 
 static void error_handler(void *data) {
@@ -1783,6 +2463,7 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
     for (i = 0; i < REFS_PER_FRAME; ++i) {
       cm->frame_refs[i].idx = INVALID_IDX;
       cm->frame_refs[i].buf = NULL;
+      cm->frame_refs[i].buf_sr = NULL;
     }
 
     setup_frame_size(cm, rb);
@@ -1790,6 +2471,8 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
       memset(&cm->ref_frame_map, -1, sizeof(cm->ref_frame_map));
       pbi->need_resync = 0;
     }
+    /* NEMO: setup */
+    setup_sr_frame_size(cm);
   } else {
     cm->intra_only = cm->show_frame ? 0 : vpx_rb_read_bit(rb);
 
@@ -1822,6 +2505,8 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
         memset(&cm->ref_frame_map, -1, sizeof(cm->ref_frame_map));
         pbi->need_resync = 0;
       }
+      /* NEMO: setup */
+      setup_sr_frame_size(cm);
     } else if (pbi->need_resync != 1) { /* Skip if need resync */
       pbi->refresh_frame_flags = vpx_rb_read_literal(rb, REF_FRAMES);
       for (i = 0; i < REFS_PER_FRAME; ++i) {
@@ -1830,10 +2515,19 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
         RefBuffer *const ref_frame = &cm->frame_refs[i];
         ref_frame->idx = idx;
         ref_frame->buf = &frame_bufs[idx].buf;
+        ref_frame->buf_sr = &frame_bufs[idx].sr_buf;
         cm->ref_frame_sign_bias[LAST_FRAME + i] = vpx_rb_read_bit(rb);
+
+        cm->metadata.reference_frames[i].video_frame_index =
+            frame_bufs[idx].current_video_frame;
+        cm->metadata.reference_frames[i].super_frame_index =
+            frame_bufs[idx].current_super_frame;
       }
 
       setup_frame_size_with_refs(cm, rb);
+
+      /* NEMO: setup */
+      setup_sr_frame_size_with_refs(cm);
 
       cm->allow_high_precision_mv = vpx_rb_read_bit(rb);
       cm->interp_filter = read_interp_filter(rb);
@@ -1849,6 +2543,12 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
         vp9_setup_scale_factors_for_frame(
             &ref_buf->sf, ref_buf->buf->y_crop_width,
             ref_buf->buf->y_crop_height, cm->width, cm->height);
+        /* NEMO: setup */
+
+        vp9_setup_scale_factors_for_sr_frame(
+            &ref_buf->sf_sr, ref_buf->buf_sr->y_crop_width,
+            ref_buf->buf_sr->y_crop_height, cm->width, cm->height, false, false,
+            cm->scale);
 #endif
       }
     }
@@ -1916,6 +2616,14 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
   if (sz == 0)
     vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
                        "Invalid header size");
+
+  /* NEMO: setup */
+  const int num_threads = (pbi->max_threads > 1) ? pbi->max_threads : 1;
+  vp9_setup_scale_factors_for_sr_frame(&cm->sf_upsample_inter, cm->scale,
+                                       cm->scale, 1, 1, true, true, cm->scale);
+  for (i = 0; i < num_threads; ++i) {
+    setup_residual_size(cm, pbi->nemo_worker_data[i].lr_resiudal);
+  }
 
   return sz;
 }
@@ -2011,6 +2719,7 @@ BITSTREAM_PROFILE vp9_read_profile(struct vpx_read_bit_buffer *rb) {
 
 void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
                       const uint8_t *data_end, const uint8_t **p_data_end) {
+  int i;
   VP9_COMMON *const cm = &pbi->common;
   MACROBLOCKD *const xd = &pbi->mb;
   struct vpx_read_bit_buffer rb;
@@ -2067,8 +2776,25 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
     vpx_free(pbi->tile_worker_data);
     CHECK_MEM_ERROR(cm, pbi->tile_worker_data, vpx_memalign(32, twd_size));
     pbi->total_tiles = tile_rows * tile_cols;
+
+    /* NEMO: initialize per-thread worker data */
+    for (i = 0; i < num_tile_workers; i++) {
+      pbi->tile_worker_data[i].nemo_worker_data =
+          &pbi->nemo_worker_data[0];  // init as 0
+    }
   }
 
+  const int num_threads = (pbi->max_threads > 1) ? pbi->max_threads : 1;
+
+  /* NEMO: initialize per-thread worker data */
+  for (i = 0; i < num_threads; i++) {
+    memset(pbi->nemo_worker_data[i].lr_resiudal->buffer_alloc, 0,
+           pbi->nemo_worker_data[i].lr_resiudal->buffer_alloc_sz);
+    memset(&pbi->nemo_worker_data[i].metadata, 0, sizeof(nemo_metdata_t));
+  }
+
+  // Note: bilinear interp. is done after decoding because resulting pixels are
+  // affected by neighboring pixels.
   if (pbi->max_threads > 1 && tile_rows == 1 && tile_cols > 1) {
     // Multi-threaded tile decoder
     *p_data_end = decode_tiles_mt(pbi, data + first_partition_size, data_end);
@@ -2080,12 +2806,21 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
                                  0, 0, pbi->tile_workers, pbi->num_tile_workers,
                                  &pbi->lf_row_sync);
       }
+      /* NEMO: up-scale intra-block or residual of inter-block */
+      upscale_block_by_bilinear_interp_mt(pbi);
     } else {
       vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
                          "Decode failed. Frame data is corrupted.");
     }
   } else {
     *p_data_end = decode_tiles(pbi, data + first_partition_size, data_end);
+    /* NEMO: up-scale intra-block or residual of inter-block */
+    upscale_block_by_bilinear_interp(pbi);
+  }
+
+  /* NEMO: apply a DNN to anchor points*/
+  if (cm->apply_dnn(cm)) {
+    cm->dnn(cm);
   }
 
   if (!xd->corrupted) {

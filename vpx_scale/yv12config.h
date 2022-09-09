@@ -48,6 +48,12 @@ typedef struct yv12_buffer_config {
   uint8_t *v_buffer;
   uint8_t *alpha_buffer;
 
+  /* NEMO: buffer for residual */
+  int16_t *y_residual;
+  int16_t *u_residual;
+  int16_t *v_residual;
+  int16_t *alpha_residual;
+
   uint8_t *buffer_alloc;
   int buffer_alloc_sz;
   int border;
@@ -72,6 +78,15 @@ int vp8_yv12_realloc_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width,
                                   int height, int border);
 int vp8_yv12_de_alloc_frame_buffer(YV12_BUFFER_CONFIG *ybf);
 
+int vpx_realloc_frame_residual(YV12_BUFFER_CONFIG *ybf, int width, int height,
+                               int ss_x, int ss_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+        int use_highbitdepth,
+#endif
+                               int border, int byte_alignment,
+                               vpx_codec_frame_buffer_t *fb,
+                               vpx_get_frame_buffer_cb_fn_t cb, void *cb_priv);
+
 int vpx_alloc_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width, int height,
                            int ss_x, int ss_y,
 #if CONFIG_VP9_HIGHBITDEPTH
@@ -87,6 +102,15 @@ int vpx_alloc_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width, int height,
 // internally to decode the current frame. Returns 0 on success. Returns < 0
 // on failure.
 int vpx_realloc_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width, int height,
+                             int ss_x, int ss_y,
+#if CONFIG_VP9_HIGHBITDEPTH
+                             int use_highbitdepth,
+#endif
+                             int border, int byte_alignment,
+                             vpx_codec_frame_buffer_t *fb,
+                             vpx_get_frame_buffer_cb_fn_t cb, void *cb_priv);
+
+int vpx_realloc_scaled_frame_buffer(YV12_BUFFER_CONFIG *ybf, int width, int crop_width, int height, int crop_height, int scale,
                              int ss_x, int ss_y,
 #if CONFIG_VP9_HIGHBITDEPTH
                              int use_highbitdepth,

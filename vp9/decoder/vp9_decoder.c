@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <limits.h>
 #include <stdio.h>
+#include <vpx_util/vpx_write_yuv_frame.h>
 
 #include "./vp9_rtcd.h"
 #include "./vpx_dsp_rtcd.h"
@@ -35,6 +36,8 @@
 #include "vp9/decoder/vp9_decodeframe.h"
 #include "vp9/decoder/vp9_decoder.h"
 #include "vp9/decoder/vp9_detokenize.h"
+
+#include <vpx_dsp/psnr.h>
 
 static void initialize_dec(void) {
   static volatile int init_done = 0;
@@ -116,6 +119,16 @@ VP9Decoder *vp9_decoder_create(BufferPool *const pool) {
 
   vpx_get_worker_interface()->init(&pbi->lf_worker);
 
+    /* NEMO: initialize variables */
+    pbi->nemo_worker_data = NULL;
+    cm->nemo_cfg = NULL;
+    cm->yv12_input_frame = NULL;
+    cm->yv12_reference_frame = NULL;
+    cm->rgb24_input_frame = NULL;
+    cm->rgb24_reference_frame = NULL;
+    cm->rgb24_input_tensor = NULL;
+    cm->rgb24_sr_tensor = NULL;
+
   return pbi;
 }
 
@@ -138,6 +151,24 @@ void vp9_decoder_remove(VP9Decoder *pbi) {
   if (pbi->num_tile_workers > 0) {
     vp9_loop_filter_dealloc(&pbi->lf_row_sync);
   }
+
+    /* NEMO: free frames used for quality measurements */
+    vpx_free_frame_buffer(pbi->common.yv12_input_frame);
+    vpx_free_frame_buffer(pbi->common.yv12_reference_frame);
+    vpx_free(pbi->common.yv12_input_frame);
+    vpx_free(pbi->common.yv12_reference_frame);
+    RGB24_free_frame_buffer(pbi->common.rgb24_input_frame);
+    RGB24_free_frame_buffer(pbi->common.rgb24_reference_frame);
+    vpx_free(pbi->common.rgb24_input_frame);
+    vpx_free(pbi->common.rgb24_reference_frame);
+    RGB24_free_frame_buffer(pbi->common.rgb24_input_tensor);
+    RGB24_free_frame_buffer(pbi->common.rgb24_sr_tensor);
+    vpx_free(pbi->common.rgb24_input_tensor);
+    vpx_free(pbi->common.rgb24_sr_tensor);
+
+    /* NEMO: free workers */
+    const int num_threads = (pbi->max_threads > 1) ? pbi->max_threads : 1;
+    remove_nemo_worker(pbi->nemo_worker_data, num_threads);
 
   vp9_remove_common(&pbi->common);
   vpx_free(pbi);
@@ -251,7 +282,7 @@ static void swap_frame_buffers(VP9Decoder *pbi) {
     cm->ref_frame_map[ref_index] = cm->next_ref_frame_map[ref_index];
   }
   pbi->hold_ref_buf = 0;
-  cm->frame_to_show = get_frame_new_buffer(cm);
+  cm->frame_to_show = get_sr_frame_new_buffer(cm); //hyunho: cache mode or not
 
   --frame_bufs[cm->new_fb_idx].ref_count;
 
@@ -260,6 +291,7 @@ static void swap_frame_buffers(VP9Decoder *pbi) {
     cm->frame_refs[ref_index].idx = -1;
 }
 
+//Hyunho: psource, size matches for a single frame
 int vp9_receive_compressed_data(VP9Decoder *pbi, size_t size,
                                 const uint8_t **psource) {
   VP9_COMMON *volatile const cm = &pbi->common;
@@ -291,6 +323,8 @@ int vp9_receive_compressed_data(VP9Decoder *pbi, size_t size,
       !frame_bufs[cm->new_fb_idx].released) {
     pool->release_fb_cb(pool->cb_priv,
                         &frame_bufs[cm->new_fb_idx].raw_frame_buffer);
+    pool->release_fb_cb(pool->cb_priv,
+                        &frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer);
     frame_bufs[cm->new_fb_idx].released = 1;
   }
 

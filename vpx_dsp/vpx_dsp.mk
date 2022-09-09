@@ -86,6 +86,16 @@ DSP_SRCS-yes += vpx_convolve.c
 DSP_SRCS-yes += vpx_convolve.h
 DSP_SRCS-yes += vpx_filter.h
 
+#NEMO
+DSP_SRCS-yes += vpx_bilinear.c
+DSP_SRCS-yes += vpx_bilinear.h
+DSP_SRCS-yes += vpx_convert.c
+DSP_SRCS-yes += vpx_convert.h
+ifeq ($(HAVE_NEON),yes)
+DSP_SRCS-yes += arm/vpx_bilinear_interp_neon.c
+DSP_SRCS-yes += arm/vpx_convert_neon.c
+endif  # HAVE_NEON
+
 DSP_SRCS-$(ARCH_X86)$(ARCH_X86_64) += x86/convolve.h
 DSP_SRCS-$(ARCH_X86)$(ARCH_X86_64) += x86/vpx_asm_stubs.c
 DSP_SRCS-$(HAVE_SSSE3) += x86/convolve_ssse3.h

@@ -15,10 +15,39 @@
 
 typedef vpx_codec_stream_info_t vp9_stream_info_t;
 
+/* Structure to hold coefficients to run bilinear interpolation */
+typedef struct nemo_bilinear_coeff {
+  float *x_lerp;
+  int16_t *x_lerp_fixed;
+  float *y_lerp;
+  int16_t *y_lerp_fixed;
+  int *top_y_index;
+  int *bottom_y_index;
+  int *left_x_index;
+  int *right_x_index;
+} nemo_bilinear_coeff_t;
+
+typedef struct nemo_dnn_cfg {
+  int scale;
+  int (*apply_dnn)(struct VP9Common *cm);
+  int (*dnn)(struct VP9Common *cm);
+} nemo_dnn_cfg_t;
+
+typedef struct nemo_cfg {
+  // mode
+  int target_width;
+  int target_height;
+
+  // profile
+  nemo_bilinear_coeff_t *bilinear_coeff;
+  nemo_dnn_cfg_t *nemo_dnn_cfg;
+} nemo_cfg_t;
+
 struct vpx_codec_alg_priv {
   vpx_codec_priv_t base;
   vpx_codec_dec_cfg_t cfg;
   vp9_stream_info_t si;
+  nemo_cfg_t *nemo_cfg;  // NEMO: New variable
   VP9Decoder *pbi;
   void *user_priv;
   int postproc_cfg_set;

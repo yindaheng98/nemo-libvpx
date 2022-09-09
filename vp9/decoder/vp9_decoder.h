@@ -11,6 +11,10 @@
 #ifndef VP9_DECODER_VP9_DECODER_H_
 #define VP9_DECODER_VP9_DECODER_H_
 
+#include <stdbool.h>
+#ifdef __ANDROID_API__
+#include <android/log.h>
+#endif
 #include "./vpx_config.h"
 
 #include "vpx/vpx_codec.h"
@@ -34,6 +38,7 @@ typedef struct TileBuffer {
 
 typedef struct TileWorkerData {
   const uint8_t *data_end;
+    nemo_worker_data_t *nemo_worker_data;
   int buf_start, buf_end;  // pbi->tile_buffers to decode, inclusive
   vpx_reader bit_reader;
   FRAME_COUNTS counts;
@@ -72,6 +77,8 @@ typedef struct VP9Decoder {
   int inv_tile_order;
   int need_resync;   // wait for key/intra-only frame.
   int hold_ref_buf;  // hold the reference buffer.
+
+    nemo_worker_data_t *nemo_worker_data; // NEMO
 } VP9Decoder;
 
 int vp9_receive_compressed_data(struct VP9Decoder *pbi, size_t size,
@@ -120,6 +127,7 @@ static INLINE void decrease_ref_count(int idx, RefCntBuffer *const frame_bufs,
     if (!frame_bufs[idx].released && frame_bufs[idx].ref_count == 0 &&
         frame_bufs[idx].raw_frame_buffer.priv) {
       pool->release_fb_cb(pool->cb_priv, &frame_bufs[idx].raw_frame_buffer);
+      pool->release_fb_cb(pool->cb_priv, &frame_bufs[idx].raw_sr_frame_buffer);
       frame_bufs[idx].released = 1;
     }
   }

@@ -329,6 +329,14 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
     if (res != VPX_CODEC_OK) return res;
   }
 
+  if (ctx->sr_img) {
+    YV12_BUFFER_CONFIG sd;
+    image2yuvconfig(ctx->sr_img, &sd);
+    ctx->pbi->sr_img = &sd;
+    ctx->sr_img = NULL;
+    ctx->pbi->common.scale = ctx->scale;
+  }
+
   res = vp9_parse_superframe_index(data, data_sz, frame_sizes, &frame_count,
                                    ctx->decrypt_cb, ctx->decrypt_state);
   if (res != VPX_CODEC_OK) return res;
@@ -375,7 +383,9 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
 }
 
 static vpx_codec_err_t decoder_set_sr_frame(vpx_codec_alg_priv_t *ctx,
-                                            vpx_image_t *img) {
+                                            vpx_image_t *img, int scale) {
+  ctx->sr_img = img;
+  ctx->scale = scale;
   return VPX_CODEC_OK;  // TODO
 }
 

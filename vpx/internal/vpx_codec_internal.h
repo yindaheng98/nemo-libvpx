@@ -207,7 +207,7 @@ typedef vpx_codec_err_t (*vpx_codec_decode_fn_t)(vpx_codec_alg_priv_t *ctx,
  * processed completely..
  */
 typedef vpx_codec_err_t (*vpx_codec_set_sr_frame_fn_t)(
-    vpx_codec_alg_priv_t *ctx, vpx_image_t *img);
+    vpx_codec_alg_priv_t *ctx, vpx_image_t *img, int scale);
 
 /*!\brief Decoded frames iterator
  *

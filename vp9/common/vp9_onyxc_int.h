@@ -91,6 +91,7 @@ typedef struct VP9Common {
   struct vpx_internal_error_info error;
   vpx_color_space_t color_space;
   vpx_color_range_t color_range;
+  int scale;
   int width;
   int height;
   int render_width;

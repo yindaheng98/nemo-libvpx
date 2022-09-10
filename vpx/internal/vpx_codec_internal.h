@@ -198,6 +198,17 @@ typedef vpx_codec_err_t (*vpx_codec_decode_fn_t)(vpx_codec_alg_priv_t *ctx,
                                                  void *user_priv,
                                                  long deadline);
 
+/*!\brief super-resolution frame setter function pointer prototype
+ *
+ * \param[in] ctx          Pointer to this instance's context
+ * \param[in] img         Pointer to super-resolution frame raw data.
+ *
+ * \return Returns #VPX_CODEC_OK if the super-resolution frame data was
+ * processed completely..
+ */
+typedef vpx_codec_err_t (*vpx_codec_set_sr_frame_fn_t)(
+    vpx_codec_alg_priv_t *ctx, vpx_image_t *img);
+
 /*!\brief Decoded frames iterator
  *
  * Iterates over a list of the frames available for display. The iterator
@@ -300,6 +311,8 @@ struct vpx_codec_iface {
     vpx_codec_get_frame_fn_t
         get_frame;                   /**< \copydoc ::vpx_codec_get_frame_fn_t */
     vpx_codec_set_fb_fn_t set_fb_fn; /**< \copydoc ::vpx_codec_set_fb_fn_t */
+    vpx_codec_set_sr_frame_fn_t
+        set_sr_frame; /**< \copydoc ::vpx_codec_set_sr_frame_fn_t */
   } dec;
   struct vpx_codec_enc_iface {
     int cfg_map_count;

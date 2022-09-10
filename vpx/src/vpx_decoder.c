@@ -120,6 +120,19 @@ vpx_codec_err_t vpx_codec_decode(vpx_codec_ctx_t *ctx, const uint8_t *data,
   return SAVE_STATUS(ctx, res);
 }
 
+vpx_codec_err_t vpx_codec_set_sr_frame(vpx_codec_ctx_t *ctx, vpx_image_t *img) {
+  vpx_codec_err_t res = VPX_CODEC_OK;
+
+  if (!ctx || (img))
+    res = VPX_CODEC_INVALID_PARAM;
+  else if (!ctx->iface || !ctx->priv)
+    res = VPX_CODEC_ERROR;
+  else {
+    res = ctx->iface->dec.set_sr_frame(get_alg_priv(ctx), img);
+  }
+  return SAVE_STATUS(ctx, res);
+}
+
 vpx_image_t *vpx_codec_get_frame(vpx_codec_ctx_t *ctx, vpx_codec_iter_t *iter) {
   vpx_image_t *img;
 

@@ -216,6 +216,16 @@ vpx_codec_err_t vpx_codec_decode(vpx_codec_ctx_t *ctx, const uint8_t *data,
                                  unsigned int data_sz, void *user_priv,
                                  long deadline);
 
+/*!\brief Set super-resolution frame for next frame decode.
+ *
+ * \param[in] ctx          Pointer to this instance's context
+ * \param[in] img         Pointer to super-resolution frame raw data.
+ *
+ * \return Returns #VPX_CODEC_OK if the super-resolution frame data was
+ * processed completely..
+ */
+vpx_codec_err_t vpx_codec_set_sr_frame(vpx_codec_ctx_t *ctx, vpx_image_t *img);
+
 /*!\brief Decoded frames iterator
  *
  * Iterates over a list of the frames available for display. The iterator

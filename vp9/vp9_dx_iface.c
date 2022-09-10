@@ -374,6 +374,11 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
   return res;
 }
 
+static vpx_codec_err_t decoder_set_sr_frame(vpx_codec_alg_priv_t *ctx,
+                                            vpx_image_t *img) {
+  return VPX_CODEC_OK;  // TODO
+}
+
 static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
                                       vpx_codec_iter_t *iter) {
   vpx_image_t *img = NULL;
@@ -677,6 +682,7 @@ CODEC_INTERFACE(vpx_codec_vp9_dx) = {
       decoder_decode,     // vpx_codec_decode_fn_t
       decoder_get_frame,  // vpx_codec_frame_get_fn_t
       decoder_set_fb_fn,  // vpx_codec_set_fb_fn_t
+      decoder_set_sr_frame,
   },
   {
       // NOLINT

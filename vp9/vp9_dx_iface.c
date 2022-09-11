@@ -258,6 +258,17 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
 
   init_buffer_callbacks(ctx);
 
+  /* NEMO: copy variables from ctx */
+  ctx->pbi->common.bilinear_coeff = init_bilinear_coeff(64, 64, ctx->scale);
+  ctx->pbi->common.scale = ctx->scale;
+
+  /* NEMO: initialize workers */
+  if ((ctx->pbi->nemo_worker_data = init_nemo_worker(
+           (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1)) == NULL) {
+    set_error_detail(ctx, "Failed to allocate nemo_worker_data");
+    return VPX_CODEC_MEM_ERROR;
+  }
+
   return VPX_CODEC_OK;
 }
 
@@ -410,7 +421,9 @@ static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
       ctx->last_show_frame = ctx->pbi->common.new_fb_idx;
       if (ctx->need_resync) return NULL;
       yuvconfig2image(&ctx->img, &sd, ctx->user_priv);
-      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_frame_buffer.priv;
+
+      /* Yin: return the sr priv */
+      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer.priv;
       img = &ctx->img;
       return img;
     }

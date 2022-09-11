@@ -21,6 +21,7 @@ struct vpx_codec_alg_priv {
   vp9_stream_info_t si;
   vpx_image_t *sr_img;
   int scale;
+  nemo_cfg_t *nemo_cfg;  // NEMO: New variable
   VP9Decoder *pbi;
   void *user_priv;
   int postproc_cfg_set;

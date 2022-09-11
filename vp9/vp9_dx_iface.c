@@ -66,6 +66,9 @@ static vpx_codec_err_t decoder_destroy(vpx_codec_alg_priv_t *ctx) {
     vp9_free_internal_frame_buffers(&ctx->buffer_pool->int_frame_buffers);
   }
 
+  /* NEMO: free nemo_cfg */
+  remove_nemo_cfg(ctx->nemo_cfg);
+
   vpx_free(ctx->buffer_pool);
   vpx_free(ctx);
   return VPX_CODEC_OK;
@@ -220,6 +223,8 @@ static void init_buffer_callbacks(vpx_codec_alg_priv_t *ctx) {
 
     pool->cb_priv = &pool->int_frame_buffers;
   }
+
+  pool->mode = ctx->nemo_cfg->decode_mode;
 }
 
 static void set_default_ppflags(vp8_postproc_cfg_t *cfg) {
@@ -236,6 +241,12 @@ static void set_ppflags(const vpx_codec_alg_priv_t *ctx, vp9_ppflags_t *flags) {
 }
 
 static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
+  int scale = 4;
+  ctx->nemo_cfg = init_nemo_cfg();
+  ctx->nemo_cfg->bilinear_coeff = init_bilinear_coeff(64, 64, scale);
+  ctx->nemo_cfg->decode_mode = DECODE_CACHE;
+  ctx->nemo_cfg->cache_mode = PROFILE_CACHE;
+
   ctx->last_show_frame = -1;
   ctx->need_resync = 1;
   ctx->flushed = 0;
@@ -257,6 +268,23 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
     set_default_ppflags(&ctx->postproc_cfg);
 
   init_buffer_callbacks(ctx);
+
+  /* NEMO: copy variables from ctx->nemo_cfg */
+  ctx->pbi->common.nemo_cfg = ctx->nemo_cfg;
+  ctx->pbi->common.buffer_pool->mode = ctx->nemo_cfg->decode_mode;
+  if (ctx->nemo_cfg->decode_mode == DECODE_SR ||
+      ctx->nemo_cfg->decode_mode == DECODE_CACHE) {
+    ctx->pbi->common.scale = 4;
+  }
+
+  /* NEMO: initialize workers */
+  const int num_threads =
+      (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1;
+  if ((ctx->pbi->nemo_worker_data =
+           init_nemo_worker(num_threads, ctx->nemo_cfg)) == NULL) {
+    set_error_detail(ctx, "Failed to allocate nemo_worker_data");
+    return VPX_NEMO_ERROR;
+  }
 
   return VPX_CODEC_OK;
 }
@@ -410,7 +438,10 @@ static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
       ctx->last_show_frame = ctx->pbi->common.new_fb_idx;
       if (ctx->need_resync) return NULL;
       yuvconfig2image(&ctx->img, &sd, ctx->user_priv);
-      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_frame_buffer.priv;
+
+      /* NEMO: return a priv depending on decode_mode */
+      /* Yin: return the sr priv */
+      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer.priv;
       img = &ctx->img;
       return img;
     }

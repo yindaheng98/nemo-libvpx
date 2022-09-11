@@ -105,6 +105,15 @@ int main(int argc, char **argv) {
   vpx_image_t raw;
   int scale;
 
+  char *myargv[5];
+  myargv[0] = argv[0];
+  myargv[1] = "/root/Programs/视频数据/270p-small.ivf";
+  myargv[2] = "/root/Programs/视频数据/1080p270p-mixed-small.yuv";
+  myargv[3] = "/root/Programs/视频数据/1080p-small.yuv";
+  myargv[4] = "4";
+  argv = myargv;
+  argc = 5;
+
   exec_name = argv[0];
 
   if (argc != 5) die("Invalid number of arguments.");

@@ -72,6 +72,7 @@ typedef struct {
   uint8_t released;
   vpx_codec_frame_buffer_t raw_frame_buffer;
   YV12_BUFFER_CONFIG buf;
+  YV12_BUFFER_CONFIG sr_buf;
 } RefCntBuffer;
 
 typedef struct BufferPool {
@@ -269,6 +270,10 @@ static INLINE YV12_BUFFER_CONFIG *get_ref_frame(VP9_COMMON *cm, int index) {
 
 static INLINE YV12_BUFFER_CONFIG *get_frame_new_buffer(VP9_COMMON *cm) {
   return &cm->buffer_pool->frame_bufs[cm->new_fb_idx].buf;
+}
+
+static INLINE YV12_BUFFER_CONFIG *get_sr_frame_new_buffer(VP9_COMMON *cm) {
+  return &cm->buffer_pool->frame_bufs[cm->new_fb_idx].sr_buf;
 }
 
 static INLINE int get_free_fb(VP9_COMMON *cm) {

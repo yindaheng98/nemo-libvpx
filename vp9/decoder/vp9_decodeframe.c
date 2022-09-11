@@ -2088,6 +2088,11 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
     *p_data_end = decode_tiles(pbi, data + first_partition_size, data_end);
   }
 
+  /* NEMO: apply a DNN to anchor points*/
+  if (cm->apply_dnn) {
+    *(get_sr_frame_new_buffer(cm)) = *(pbi->sr_img);
+  }
+
   if (!xd->corrupted) {
     if (!cm->error_resilient_mode && !cm->frame_parallel_decoding_mode) {
       vp9_adapt_coef_probs(cm);

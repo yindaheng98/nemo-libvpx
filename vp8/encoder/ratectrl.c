@@ -368,7 +368,7 @@ static void calc_iframe_target_size(VP8_COMP *cpi) {
 
         f = fopen("kf_boost.stt", "a");
         fprintf(f, " %8u %10d %10d %10d\n",
-                cpi->common.current_video_frame,  cpi->gfu_boost, cpi->baseline_gf_interval, cpi->source_alt_ref_pending);
+                cpi->common.video_frame_index,  cpi->gfu_boost, cpi->baseline_gf_interval, cpi->source_alt_ref_pending);
 
         fclose(f);
     }
@@ -420,7 +420,7 @@ static void calc_gf_params(VP8_COMP *cpi) {
             double last_iiaccumulator = 0.0;
             double IIRatio;
 
-            cpi->one_pass_frame_index = cpi->common.current_video_frame%MAX_LAG_BUFFERS;
+            cpi->one_pass_frame_index = cpi->common.video_frame_index%MAX_LAG_BUFFERS;
 
             for ( i = 0; i < (frames_to_scan - 1); i++ )
             {
@@ -850,7 +850,7 @@ static void calc_pframe_target_size(VP8_COMP *cpi) {
 #if 0
             FILE *f = fopen("dec.stt", "a");
             fprintf(f, "%10d %10d %10d %10d ***** BUFFER EMPTY\n",
-                    (int) cpi->common.current_video_frame,
+                    (int) cpi->common.video_frame_index,
                     cpi->decimation_factor, cpi->common.horiz_scale,
                     (cpi->buffer_level * 100) / cpi->oxcf.optimal_buffer_level);
             fclose(f);
@@ -927,7 +927,7 @@ static void calc_pframe_target_size(VP8_COMP *cpi) {
 
               f = fopen("gf_useaget.stt", "a");
               fprintf(f, " %8ld %10ld %10ld %10ld %10ld\n",
-                      cpi->common.current_video_frame,  cpi->gfu_boost,
+                      cpi->common.video_frame_index,  cpi->gfu_boost,
                       GFQ_ADJUSTMENT, cpi->gfu_boost, gf_frame_useage);
               fclose(f);
           }
@@ -941,7 +941,7 @@ static void calc_pframe_target_size(VP8_COMP *cpi) {
                 FILE *f;
 
                 f = fopen("GFexit.stt", "a");
-                fprintf(f, "%8ld GF coded\n", cpi->common.current_video_frame);
+                fprintf(f, "%8ld GF coded\n", cpi->common.video_frame_index);
                 fclose(f);
             }
 
@@ -996,7 +996,7 @@ static void calc_pframe_target_size(VP8_COMP *cpi) {
            * bits on this frame even if it is a contructed arf.
            * The active maximum quantizer insures that an appropriate
            * number of bits will be spent if needed for contstructed ARFs.
-          */
+           */
           cpi->this_frame_target = 0;
         }
 
@@ -1052,9 +1052,8 @@ void vp8_update_rate_correction_factors(VP8_COMP *cpi, int damp_var) {
    * overflow when values are large
    */
   projected_size_based_on_q =
-      (int)(((.5 +
-              rate_correction_factor *
-                  vp8_bits_per_mb[cpi->common.frame_type][Q]) *
+      (int)(((.5 + rate_correction_factor *
+                       vp8_bits_per_mb[cpi->common.frame_type][Q]) *
              cpi->common.MBs) /
             (1 << BPER_MB_NORMBITS));
 

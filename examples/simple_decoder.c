@@ -105,6 +105,15 @@ int main(int argc, char **argv) {
   vpx_image_t raw;
   int scale;
 
+  char *myargv[5];
+  myargv[0] = argv[0];
+  myargv[1] = "/root/Programs/视频数据/540p-small.ivf";
+  myargv[2] = "/root/Programs/视频数据/4k540p-mixed-small.yuv";
+  myargv[3] = "/root/Programs/视频数据/4K-small.yuv";
+  myargv[4] = "4";
+  argv = myargv;
+  argc = 5;
+
   exec_name = argv[0];
 
   if (argc != 5) die("Invalid number of arguments.");
@@ -140,7 +149,7 @@ int main(int argc, char **argv) {
     size_t frame_size = 0;
     const unsigned char *frame =
         vpx_video_reader_get_frame(reader, &frame_size);
-    if (vpx_img_read(&raw, infile) && frame_cnt % 10 == 0) {
+    if (vpx_img_read(&raw, infile) && frame_cnt % 5 == 0) {
       if (vpx_codec_set_sr_frame(&codec, &raw, scale))
         die_codec(&codec, "Failed to set super-resolution frame");
     }

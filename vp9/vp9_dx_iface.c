@@ -10,9 +10,13 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <math.h>
 
 #include "./vpx_config.h"
 #include "./vpx_version.h"
+#include "./tools_common.h"
 
 #include "vpx/internal/vpx_codec_internal.h"
 #include "vpx/vp8dx.h"
@@ -29,7 +33,75 @@
 #include "vp9/vp9_dx_iface.h"
 #include "vp9/vp9_iface_common.h"
 
+#include <sys/param.h>
+#include <vpx_util/vpx_write_yuv_frame.h>
+#include <vpx_dsp/psnr.h>
+#include <vpx_dsp/ssim.h>
+#include <vpx_dsp_rtcd.h>
+
+#if CONFIG_SNPE
+
+#include "vpx/snpe/main.hpp"
+
+#endif
+
+#ifdef __ANDROID_API__
+
+#include <android/log.h>
+#include <sys/stat.h>
+
+#define TAG "vp9_dx_iface.c JNI"
+#define _UNKNOWN 0
+#define _DEFAULT 1
+#define _VERBOSE 2
+#define _DEBUG 3
+#define _INFO 4
+#define _WARN 5
+#define _ERROR 6
+#define _FATAL 7
+#define _SILENT 8
+#define LOGUNK(...) __android_log_print(_UNKNOWN, TAG, __VA_ARGS__)
+#define LOGDEF(...) __android_log_print(_DEFAULT, TAG, __VA_ARGS__)
+#define LOGV(...) __android_log_print(_VERBOSE, TAG, __VA_ARGS__)
+#define LOGD(...) __android_log_print(_DEBUG, TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(_INFO, TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(_WARN, TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(_ERROR, TAG, __VA_ARGS__)
+#define LOGF(...) __android_log_print(_FATAL, TAG, __VA_ARGS__)
+#define LOGS(...) __android_log_print(_SILENT, TAG, __VA_ARGS__)
+#endif
+
 #define VP9_CAP_POSTPROC (CONFIG_VP9_POSTPROC ? VPX_CODEC_CAP_POSTPROC : 0)
+
+#define DEBUG_LATENCY 1
+#define BILLION 1E9
+#define LOG_MAX 1000
+
+static void _mkdir(const char *dir) {
+  char tmp[PATH_MAX];
+  char *p = NULL;
+  size_t len;
+
+  snprintf(tmp, sizeof(tmp), "%s", dir);
+  len = strlen(tmp);
+  if (tmp[len - 1] == '/') tmp[len - 1] = 0;
+  for (p = tmp + 1; *p; p++)
+    if (*p == '/') {
+      *p = 0;
+      mkdir(tmp, S_IRWXU);
+      *p = '/';
+    }
+  mkdir(tmp, S_IRWXU);
+}
+
+static bool _exists(const char *dir) {
+  struct stat sb;
+
+  if (stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode))
+    return true;
+  else
+    return false;
+}
 
 static vpx_codec_err_t decoder_init(vpx_codec_ctx_t *ctx,
                                     vpx_codec_priv_enc_mr_cfg_t *data) {
@@ -65,6 +137,9 @@ static vpx_codec_err_t decoder_destroy(vpx_codec_alg_priv_t *ctx) {
     vp9_free_ref_frame_buffers(ctx->buffer_pool);
     vp9_free_internal_frame_buffers(&ctx->buffer_pool->int_frame_buffers);
   }
+
+  /* NEMO: free nemo_cfg */
+  remove_nemo_cfg(ctx->nemo_cfg);
 
   vpx_free(ctx->buffer_pool);
   vpx_free(ctx);
@@ -220,6 +295,8 @@ static void init_buffer_callbacks(vpx_codec_alg_priv_t *ctx) {
 
     pool->cb_priv = &pool->int_frame_buffers;
   }
+
+  pool->mode = ctx->nemo_cfg->decode_mode;
 }
 
 static void set_default_ppflags(vp8_postproc_cfg_t *cfg) {
@@ -236,6 +313,12 @@ static void set_ppflags(const vpx_codec_alg_priv_t *ctx, vp9_ppflags_t *flags) {
 }
 
 static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
+  int scale = 4;
+  ctx->nemo_cfg = init_nemo_cfg();
+  ctx->nemo_cfg->bilinear_coeff = init_bilinear_coeff(64, 64, scale);
+  ctx->nemo_cfg->decode_mode = DECODE_CACHE;
+  ctx->nemo_cfg->cache_mode = PROFILE_CACHE;
+
   ctx->last_show_frame = -1;
   ctx->need_resync = 1;
   ctx->flushed = 0;
@@ -257,6 +340,37 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
     set_default_ppflags(&ctx->postproc_cfg);
 
   init_buffer_callbacks(ctx);
+
+  /* NEMO: copy variables from ctx->nemo_cfg */
+  ctx->pbi->common.nemo_cfg = ctx->nemo_cfg;
+  ctx->pbi->common.buffer_pool->mode = ctx->nemo_cfg->decode_mode;
+  if (ctx->nemo_cfg->decode_mode == DECODE_SR ||
+      ctx->nemo_cfg->decode_mode == DECODE_CACHE) {
+    ctx->pbi->common.scale = 4;
+  }
+
+  /* NEMO: initialize workers */
+  const int num_threads =
+      (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1;
+  if ((ctx->pbi->nemo_worker_data =
+           init_nemo_worker(num_threads, ctx->nemo_cfg)) == NULL) {
+    set_error_detail(ctx, "Failed to allocate nemo_worker_data");
+    return VPX_NEMO_ERROR;
+  }
+
+  /* NEMO: initialize frames/tensors */
+  ctx->pbi->common.rgb24_input_tensor =
+      (RGB24_BUFFER_CONFIG *)vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
+  ctx->pbi->common.rgb24_sr_tensor =
+      (RGB24_BUFFER_CONFIG *)vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
+  ctx->pbi->common.yv12_input_frame =
+      (YV12_BUFFER_CONFIG *)vpx_calloc(1, sizeof(YV12_BUFFER_CONFIG));
+  ctx->pbi->common.yv12_reference_frame =
+      (YV12_BUFFER_CONFIG *)vpx_calloc(1, sizeof(YV12_BUFFER_CONFIG));
+  ctx->pbi->common.rgb24_input_frame =
+      (RGB24_BUFFER_CONFIG *)vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
+  ctx->pbi->common.rgb24_reference_frame =
+      (RGB24_BUFFER_CONFIG *)vpx_calloc(1, sizeof(RGB24_BUFFER_CONFIG));
 
   return VPX_CODEC_OK;
 }
@@ -410,7 +524,10 @@ static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
       ctx->last_show_frame = ctx->pbi->common.new_fb_idx;
       if (ctx->need_resync) return NULL;
       yuvconfig2image(&ctx->img, &sd, ctx->user_priv);
-      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_frame_buffer.priv;
+
+      /* NEMO: return a priv depending on decode_mode */
+      /* Yin: return the sr priv */
+      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer.priv;
       img = &ctx->img;
       return img;
     }

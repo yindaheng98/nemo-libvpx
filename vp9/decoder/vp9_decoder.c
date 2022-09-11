@@ -116,6 +116,10 @@ VP9Decoder *vp9_decoder_create(BufferPool *const pool) {
 
   vpx_get_worker_interface()->init(&pbi->lf_worker);
 
+  /* NEMO: initialize variables */
+  pbi->nemo_worker_data = NULL;
+  cm->nemo_cfg = NULL;
+
   return pbi;
 }
 
@@ -138,6 +142,10 @@ void vp9_decoder_remove(VP9Decoder *pbi) {
   if (pbi->num_tile_workers > 0) {
     vp9_loop_filter_dealloc(&pbi->lf_row_sync);
   }
+
+  /* NEMO: free workers */
+  const int num_threads = (pbi->max_threads > 1) ? pbi->max_threads : 1;
+  remove_nemo_worker(pbi->nemo_worker_data, num_threads);
 
   vp9_remove_common(&pbi->common);
   vpx_free(pbi);
@@ -251,7 +259,17 @@ static void swap_frame_buffers(VP9Decoder *pbi) {
     cm->ref_frame_map[ref_index] = cm->next_ref_frame_map[ref_index];
   }
   pbi->hold_ref_buf = 0;
-  cm->frame_to_show = get_frame_new_buffer(cm);
+  if (cm->nemo_cfg->decode_mode == DECODE_CACHE ||
+      cm->nemo_cfg->decode_mode == DECODE_SR) {
+    //        cm->frame_to_show = get_frame_new_buffer(cm); //hyunho: cache mode
+    //        or not
+    cm->frame_to_show =
+        get_sr_frame_new_buffer(cm);  // hyunho: cache mode or not
+    //        cm->frame_to_show = get_frame_new_buffer(cm); //hyunho: cache mode
+    //        or not
+  } else {
+    cm->frame_to_show = get_frame_new_buffer(cm);  // hyunho: cache mode or not
+  }
 
   --frame_bufs[cm->new_fb_idx].ref_count;
 
@@ -291,6 +309,10 @@ int vp9_receive_compressed_data(VP9Decoder *pbi, size_t size,
       !frame_bufs[cm->new_fb_idx].released) {
     pool->release_fb_cb(pool->cb_priv,
                         &frame_bufs[cm->new_fb_idx].raw_frame_buffer);
+    if (pool->mode == DECODE_CACHE || pool->mode == DECODE_SR) {
+      pool->release_fb_cb(pool->cb_priv,
+                          &frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer);
+    }
     frame_bufs[cm->new_fb_idx].released = 1;
   }
 

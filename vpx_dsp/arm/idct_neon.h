@@ -216,7 +216,9 @@ static INLINE int32x4x2_t multiply_accumulate_shift_and_narrow_s32_dual(
   return d;
 }
 
-// Shift the output down by 6 and add it to the destination buffer.
+// hyunho: a0, a1, ... seems to residual
+// hyunho: a0, a1, ... seems to residual
+//  Shift the output down by 6 and add it to the destination buffer.
 static INLINE void add_and_store_u8_s16(const int16x8_t a0, const int16x8_t a1,
                                         const int16x8_t a2, const int16x8_t a3,
                                         const int16x8_t a4, const int16x8_t a5,

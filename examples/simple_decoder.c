@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
     size_t frame_size = 0;
     const unsigned char *frame =
         vpx_video_reader_get_frame(reader, &frame_size);
-    if (vpx_img_read(&raw, infile) && frame_cnt % 10 == 0) {
+    if (vpx_img_read(&raw, infile)) {
       if (vpx_codec_set_sr_frame(&codec, &raw, scale))
         die_codec(&codec, "Failed to set super-resolution frame");
     }

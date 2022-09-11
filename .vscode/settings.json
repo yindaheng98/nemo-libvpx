@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.tcc": "c",
+        "string": "c",
+        "vector": "c",
+        "fstream": "c",
+        "limits": "c",
+        "sstream": "c",
+        "utility": "c",
+        "vp9_decodeframe.h": "c",
+        "cookie_io_functions_t.h": "c",
+        "ssim.h": "c"
+    }
+}

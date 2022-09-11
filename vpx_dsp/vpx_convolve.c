@@ -8,6 +8,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
 
@@ -19,6 +20,8 @@
 #include "vpx_dsp/vpx_filter.h"
 #include "vpx_ports/mem.h"
 
+// convolve_horiz(src - src_stride * (SUBPEL_TAPS / 2 - 1), src_stride, temp,
+// 64, filter, x0_q4, x_step_q4, w, intermediate_height);
 static void convolve_horiz(const uint8_t *src, ptrdiff_t src_stride,
                            uint8_t *dst, ptrdiff_t dst_stride,
                            const InterpKernel *x_filters, int x0_q4,

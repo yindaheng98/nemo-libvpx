@@ -11,6 +11,8 @@
 #ifndef VP9_COMMON_VP9_ONYXC_INT_H_
 #define VP9_COMMON_VP9_ONYXC_INT_H_
 
+#include <vpx/vpx_nemo.h>
+
 #include "./vpx_config.h"
 #include "vpx/internal/vpx_codec_internal.h"
 #include "vpx_util/vpx_thread.h"
@@ -71,12 +73,17 @@ typedef struct {
   int mi_cols;
   uint8_t released;
   vpx_codec_frame_buffer_t raw_frame_buffer;
+  vpx_codec_frame_buffer_t raw_sr_frame_buffer;
   YV12_BUFFER_CONFIG buf;
+
+  /* NEMO: new variables */
+  YV12_BUFFER_CONFIG sr_buf;
 } RefCntBuffer;
 
 typedef struct BufferPool {
   // Private data associated with the frame buffer callbacks.
   void *cb_priv;
+  uint8_t mode;
 
   vpx_get_frame_buffer_cb_fn_t get_fb_cb;
   vpx_release_frame_buffer_cb_fn_t release_fb_cb;
@@ -87,12 +94,11 @@ typedef struct BufferPool {
   InternalFrameBufferList int_frame_buffers;
 } BufferPool;
 
+// TODO (NEMO): declare SNPE variable inside this structure
 typedef struct VP9Common {
   struct vpx_internal_error_info error;
   vpx_color_space_t color_space;
   vpx_color_range_t color_range;
-  int scale;
-  uint8_t apply_dnn;
   int width;
   int height;
   int render_width;
@@ -109,6 +115,14 @@ typedef struct VP9Common {
 #if CONFIG_VP9_HIGHBITDEPTH
   int use_highbitdepth;  // Marks if we need to use 16bit frame buffers.
 #endif
+
+  struct scale_factors sf;
+
+  /* NEMO: Variables for applying or caching DNN */
+  nemo_bilinear_coeff_t *bilinear_coeff;  // NEMO: New profile variable
+  struct scale_factors sf_upsample_inter;
+  int scale;
+  int apply_dnn;
 
   YV12_BUFFER_CONFIG *frame_to_show;
   RefCntBuffer *prev_frame;
@@ -269,6 +283,10 @@ static INLINE YV12_BUFFER_CONFIG *get_ref_frame(VP9_COMMON *cm, int index) {
 
 static INLINE YV12_BUFFER_CONFIG *get_frame_new_buffer(VP9_COMMON *cm) {
   return &cm->buffer_pool->frame_bufs[cm->new_fb_idx].buf;
+}
+
+static INLINE YV12_BUFFER_CONFIG *get_sr_frame_new_buffer(VP9_COMMON *cm) {
+  return &cm->buffer_pool->frame_bufs[cm->new_fb_idx].sr_buf;
 }
 
 static INLINE int get_free_fb(VP9_COMMON *cm) {

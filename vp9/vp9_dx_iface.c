@@ -335,6 +335,9 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
     ctx->pbi->sr_img = &sd;
     ctx->sr_img = NULL;
     ctx->pbi->common.scale = ctx->scale;
+    ctx->pbi->common.apply_dnn = 1;
+  } else {
+    ctx->pbi->common.apply_dnn = 0;
   }
 
   res = vp9_parse_superframe_index(data, data_sz, frame_sizes, &frame_count,

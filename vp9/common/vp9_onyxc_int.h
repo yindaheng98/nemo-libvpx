@@ -92,6 +92,7 @@ typedef struct VP9Common {
   vpx_color_space_t color_space;
   vpx_color_range_t color_range;
   int scale;
+  uint8_t apply_dnn;
   int width;
   int height;
   int render_width;

@@ -68,12 +68,15 @@ void vp9_free_ref_frame_buffers(BufferPool *pool) {
     if (!pool->frame_bufs[i].released &&
         pool->frame_bufs[i].raw_frame_buffer.data != NULL) {
       pool->release_fb_cb(pool->cb_priv, &pool->frame_bufs[i].raw_frame_buffer);
+      pool->release_fb_cb(pool->cb_priv,
+                          &pool->frame_bufs[i].raw_sr_frame_buffer);
       pool->frame_bufs[i].ref_count = 0;
       pool->frame_bufs[i].released = 1;
     }
     vpx_free(pool->frame_bufs[i].mvs);
     pool->frame_bufs[i].mvs = NULL;
     vpx_free_frame_buffer(&pool->frame_bufs[i].buf);
+    vpx_free_frame_buffer(&pool->frame_bufs[i].sr_buf);
   }
 }
 

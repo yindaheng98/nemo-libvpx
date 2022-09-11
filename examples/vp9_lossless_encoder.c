@@ -68,6 +68,15 @@ int main(int argc, char **argv) {
   const VpxInterface *encoder = NULL;
   const int fps = 30;
 
+  char *myargv[5];
+  myargv[0] = argv[0];
+  myargv[1] = "3840";
+  myargv[2] = "2160";
+  myargv[3] = "/root/Programs/视频数据/4k540p-mixed-small.yuv";
+  myargv[4] = "/root/Programs/视频数据/4k540p-mixed-small.ivf";
+  argv = myargv;
+  argc = 5;
+
   vp9_zero(info);
 
   exec_name = argv[0];

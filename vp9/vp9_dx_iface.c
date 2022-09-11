@@ -220,6 +220,7 @@ static void init_buffer_callbacks(vpx_codec_alg_priv_t *ctx) {
 
     pool->cb_priv = &pool->int_frame_buffers;
   }
+  pool->mode = DECODE_CACHE;
 }
 
 static void set_default_ppflags(vp8_postproc_cfg_t *cfg) {
@@ -236,6 +237,9 @@ static void set_ppflags(const vpx_codec_alg_priv_t *ctx, vp9_ppflags_t *flags) {
 }
 
 static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
+  int scale = 4;
+  ctx->bilinear_coeff = init_bilinear_coeff(64, 64, scale);
+
   ctx->last_show_frame = -1;
   ctx->need_resync = 1;
   ctx->flushed = 0;
@@ -257,6 +261,20 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
     set_default_ppflags(&ctx->postproc_cfg);
 
   init_buffer_callbacks(ctx);
+
+  /* NEMO: copy variables from ctx */
+  ctx->pbi->common.bilinear_coeff = ctx->bilinear_coeff;
+  ctx->pbi->common.buffer_pool->mode = DECODE_CACHE;
+  ctx->pbi->common.scale = ctx->scale;
+
+  /* NEMO: initialize workers */
+  const int num_threads =
+      (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1;
+  if ((ctx->pbi->nemo_worker_data =
+           init_nemo_worker(num_threads)) == NULL) {
+    set_error_detail(ctx, "Failed to allocate nemo_worker_data");
+    return VPX_NEMO_ERROR;
+  }
 
   return VPX_CODEC_OK;
 }
@@ -410,7 +428,9 @@ static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
       ctx->last_show_frame = ctx->pbi->common.new_fb_idx;
       if (ctx->need_resync) return NULL;
       yuvconfig2image(&ctx->img, &sd, ctx->user_priv);
-      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_frame_buffer.priv;
+
+      /* Yin: return the sr priv */
+      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer.priv;
       img = &ctx->img;
       return img;
     }

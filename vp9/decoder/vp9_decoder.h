@@ -73,7 +73,7 @@ typedef struct VP9Decoder {
   int inv_tile_order;
   int need_resync;   // wait for key/intra-only frame.
   int hold_ref_buf;  // hold the reference buffer.
-  YV12_BUFFER_CONFIG *sr_img;
+  YV12_BUFFER_CONFIG sr_img;
 
   nemo_worker_data_t *nemo_worker_data;  // NEMO
 } VP9Decoder;

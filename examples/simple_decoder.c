@@ -164,6 +164,7 @@ int main(int argc, char **argv) {
 
   printf("Processed %d frames.\n", frame_cnt);
   if (vpx_codec_destroy(&codec)) die_codec(&codec, "Failed to destroy codec");
+  // cannot destroy because the reuse of `raw`
 
   printf("Play: ffplay -f rawvideo -pix_fmt yuv420p -s %dx%d %s\n",
          info->frame_width, info->frame_height, argv[2]);

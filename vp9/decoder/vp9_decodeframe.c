@@ -3037,7 +3037,7 @@ void vp9_decode_frame(VP9Decoder *pbi, const uint8_t *data,
 
   /* NEMO: apply a DNN to anchor points*/
   if (cm->apply_dnn) {
-    *(get_sr_frame_new_buffer(cm)) = *(pbi->sr_img);
+    memcpy(get_sr_frame_new_buffer(cm), &(pbi->sr_img), sizeof(YV12_BUFFER_CONFIG));
   }
 
   if (!xd->corrupted) {

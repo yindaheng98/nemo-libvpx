@@ -266,7 +266,7 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
   if ((ctx->pbi->nemo_worker_data = init_nemo_worker(
            (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1)) == NULL) {
     set_error_detail(ctx, "Failed to allocate nemo_worker_data");
-    return VPX_NEMO_ERROR;
+    return VPX_CODEC_MEM_ERROR;
   }
 
   return VPX_CODEC_OK;
@@ -341,9 +341,7 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
   }
 
   if (ctx->sr_img) {
-    YV12_BUFFER_CONFIG sd;
-    image2yuvconfig(ctx->sr_img, &sd);
-    ctx->pbi->sr_img = &sd;
+    image2yuvconfig(ctx->sr_img, &(ctx->pbi->sr_img));
     ctx->sr_img = NULL;
     ctx->pbi->common.scale = ctx->scale;
     ctx->pbi->common.apply_dnn = 1;

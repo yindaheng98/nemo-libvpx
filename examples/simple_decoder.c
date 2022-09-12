@@ -105,6 +105,15 @@ int main(int argc, char **argv) {
   vpx_image_t raw;
   int scale;
 
+  char *myargv[5];
+  myargv[0] = argv[0];
+  myargv[1] = "/root/Programs/视频数据/270p-small.ivf";
+  myargv[2] = "/root/Programs/视频数据/1080p270p-mixed-small.yuv";
+  myargv[3] = "/root/Programs/视频数据/1080p-small.yuv";
+  myargv[4] = "4";
+  argv = myargv;
+  argc = 5;
+
   exec_name = argv[0];
 
   if (argc != 5) die("Invalid number of arguments.");
@@ -155,6 +164,7 @@ int main(int argc, char **argv) {
 
   printf("Processed %d frames.\n", frame_cnt);
   if (vpx_codec_destroy(&codec)) die_codec(&codec, "Failed to destroy codec");
+  // cannot destroy because the reuse of `raw`
 
   printf("Play: ffplay -f rawvideo -pix_fmt yuv420p -s %dx%d %s\n",
          info->frame_width, info->frame_height, argv[2]);

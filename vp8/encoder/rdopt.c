@@ -272,7 +272,7 @@ void vp8_auto_select_speed(VP8_COMP *cpi) {
 
         f = fopen("speed.stt", "a");
         fprintf(f, " %8ld %10ld %10ld %10ld\n",
-                cpi->common.current_video_frame, cpi->Speed, milliseconds_for_compress, cpi->avg_pick_mode_time);
+                cpi->common.video_frame_index, cpi->Speed, milliseconds_for_compress, cpi->avg_pick_mode_time);
         fclose(f);
     }
 
@@ -770,9 +770,9 @@ static void rd_pick_intra_mbuv_mode(MACROBLOCK *x, int *rate,
     vp8_quantize_mbuv(x);
 
     rate_to = rd_cost_mbuv(x);
-    this_rate = rate_to +
-                x->intra_uv_mode_cost[xd->frame_type]
-                                     [xd->mode_info_context->mbmi.uv_mode];
+    this_rate =
+        rate_to + x->intra_uv_mode_cost[xd->frame_type]
+                                       [xd->mode_info_context->mbmi.uv_mode];
 
     this_distortion = vp8_mbuverror(x) / 4;
 
@@ -1608,7 +1608,7 @@ static int evaluate_inter_mode_rd(int mdcounts[4], RATE_DISTORTION *rd,
       unsigned int q2dc = xd->block[24].dequant[0];
       /* If theres is no codeable 2nd order dc
          or a very small uniform pixel change change */
-      if ((sse - var<q2dc * q2dc>> 4) || (sse / 2 > var && sse - var < 64)) {
+      if ((sse - var<q2dc * q2dc> > 4) || (sse / 2 > var && sse - var < 64)) {
         /* Check u and v to make sure skip is ok */
         unsigned int sse2 = VP8_UVSSE(x);
         if (sse2 * 2 < threshold) {

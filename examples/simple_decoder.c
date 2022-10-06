@@ -88,7 +88,9 @@
 static const char *exec_name;
 
 void usage_exit(void) {
-  fprintf(stderr, "Usage: %s <infile> <outfile>\n", exec_name);
+  fprintf(stderr,
+          "Usage: %s <infile> <outfile> <sr infile> <scale> <interval>\n",
+          exec_name);
   exit(EXIT_FAILURE);
 }
 
@@ -100,9 +102,13 @@ int main(int argc, char **argv) {
   const VpxInterface *decoder = NULL;
   const VpxVideoInfo *info = NULL;
 
+  FILE *infile = NULL;
+  vpx_image_t raw;
+  int scale, interval;
+
   exec_name = argv[0];
 
-  if (argc != 3) die("Invalid number of arguments.");
+  if (argc != 6) die("Invalid number of arguments.");
 
   reader = vpx_video_reader_open(argv[1]);
   if (!reader) die("Failed to open %s for reading.", argv[1]);
@@ -112,6 +118,15 @@ int main(int argc, char **argv) {
 
   info = vpx_video_reader_get_info(reader);
 
+  scale = (int)strtol(argv[4], NULL, 0);
+  if (!vpx_img_alloc(&raw, VPX_IMG_FMT_I420, info->frame_width * scale,
+                     info->frame_height * scale, 1)) {
+    die("Failed to allocate image.");
+  }
+
+  if (!(infile = fopen(argv[3], "rb")))
+    die("Failed to open %s for reading.", argv[3]);
+
   decoder = get_vpx_decoder_by_fourcc(info->codec_fourcc);
   if (!decoder) die("Unknown input codec.");
 
@@ -120,12 +135,17 @@ int main(int argc, char **argv) {
   if (vpx_codec_dec_init(&codec, decoder->codec_interface(), NULL, 0))
     die_codec(&codec, "Failed to initialize decoder.");
 
+  interval = (int)strtol(argv[5], NULL, 0);
   while (vpx_video_reader_read_frame(reader)) {
     vpx_codec_iter_t iter = NULL;
     vpx_image_t *img = NULL;
     size_t frame_size = 0;
     const unsigned char *frame =
         vpx_video_reader_get_frame(reader, &frame_size);
+    if (vpx_img_read(&raw, infile) && frame_cnt % interval == 0) {
+      if (vpx_codec_set_sr_frame(&codec, &raw, scale))
+        die_codec(&codec, "Failed to set super-resolution frame");
+    }
     if (vpx_codec_decode(&codec, frame, (unsigned int)frame_size, NULL, 0))
       die_codec(&codec, "Failed to decode frame.");
 
@@ -137,6 +157,7 @@ int main(int argc, char **argv) {
 
   printf("Processed %d frames.\n", frame_cnt);
   if (vpx_codec_destroy(&codec)) die_codec(&codec, "Failed to destroy codec");
+  // cannot destroy because the reuse of `raw`
 
   printf("Play: ffplay -f rawvideo -pix_fmt yuv420p -s %dx%d %s\n",
          info->frame_width, info->frame_height, argv[2]);

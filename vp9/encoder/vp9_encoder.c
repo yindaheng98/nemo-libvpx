@@ -65,12 +65,14 @@
 #define AM_SEGMENT_ID_INACTIVE 7
 #define AM_SEGMENT_ID_ACTIVE 0
 
-#define ALTREF_HIGH_PRECISION_MV 1     // Whether to use high precision mv
-                                       //  for altref computation.
-#define HIGH_PRECISION_MV_QTHRESH 200  // Q threshold for high precision
-                                       // mv. Choose a very high value for
-                                       // now so that HIGH_PRECISION is always
-                                       // chosen.
+#define ALTREF_HIGH_PRECISION_MV \
+  1  // Whether to use high precision mv
+     //  for altref computation.
+#define HIGH_PRECISION_MV_QTHRESH \
+  200  // Q threshold for high precision
+       // mv. Choose a very high value for
+       // now so that HIGH_PRECISION is always
+       // chosen.
 
 #define FRAME_SIZE_FACTOR 128  // empirical params for context model threshold
 #define FRAME_RATE_FACTOR 8
@@ -2017,8 +2019,9 @@ VP9_COMP *vp9_create_compressor(VP9EncoderConfig *oxcf,
 
   realloc_segmentation_maps(cpi);
 
-  CHECK_MEM_ERROR(cm, cpi->skin_map, vpx_calloc(cm->mi_rows * cm->mi_cols,
-                                                sizeof(cpi->skin_map[0])));
+  CHECK_MEM_ERROR(
+      cm, cpi->skin_map,
+      vpx_calloc(cm->mi_rows * cm->mi_cols, sizeof(cpi->skin_map[0])));
 
   CHECK_MEM_ERROR(cm, cpi->alt_ref_aq, vp9_alt_ref_aq_create());
 
@@ -2390,7 +2393,7 @@ void vp9_remove_compressor(VP9_COMP *cpi) {
     {
       printf("\n_pick_loop_filter_level:%d\n", cpi->time_pick_lpf / 1000);
       printf("\n_frames recive_data encod_mb_row compress_frame  Total\n");
-      printf("%6d %10ld %10ld %10ld %10ld\n", cpi->common.current_video_frame,
+      printf("%6d %10ld %10ld %10ld %10ld\n", cpi->common.video_frame_index,
              cpi->time_receive_data / 1000, cpi->time_encode_sb_row / 1000,
              cpi->time_compress_data / 1000,
              (cpi->time_receive_data + cpi->time_compress_data) / 1000);
@@ -3210,7 +3213,7 @@ static void output_frame_level_debug_stats(VP9_COMP *cpi) {
         "%10"PRId64", %10"PRId64", %10d, %7.2lf, %7.2lf, %7.2lf, %7.2lf, "
         "%7.2lf, %6d, %6d, %5d, %5d, %5d, %10"PRId64", %10.3lf, %10lf, %8u, "
         "%10"PRId64", %10d, %10d, %10d, %10d, %10d\n",
-        cpi->common.current_video_frame,
+        cpi->common.video_frame_index,
         cm->width, cm->height,
         cpi->last_time_stamp_seen,
         cpi->last_end_time_stamp_seen,
@@ -3252,7 +3255,7 @@ static void output_frame_level_debug_stats(VP9_COMP *cpi) {
     FILE *const fmodes = fopen("Modes.stt", "a");
     int i;
 
-    fprintf(fmodes, "%6d:%1d:%1d:%1d ", cpi->common.current_video_frame,
+    fprintf(fmodes, "%6d:%1d:%1d:%1d ", cpi->common.video_frame_index,
             cm->frame_type, cpi->refresh_golden_frame,
             cpi->refresh_alt_ref_frame);
 
@@ -4494,7 +4497,7 @@ static void encode_frame_to_data_rate(VP9_COMP *cpi, size_t *size,
 #endif
 #endif
 #ifdef OUTPUT_YUV_SKINMAP
-  if (cpi->common.current_video_frame > 1) {
+  if (cpi->common.video_frame_index > 1) {
     vp9_output_skin_map(cpi, yuv_skinmap_file);
   }
 #endif
@@ -5465,7 +5468,7 @@ int vp9_get_compressed_data(VP9_COMP *cpi, unsigned int *frame_flags,
           {
             FILE *f = fopen("q_used.stt", "a");
             fprintf(f, "%5d : Y%f7.3:U%f7.3:V%f7.3:F%f7.3:S%7.3f\n",
-                    cpi->common.current_video_frame, y2, u2, v2,
+                    cpi->common.video_frame_index, y2, u2, v2,
                     frame_psnr2, frame_ssim2);
             fclose(f);
           }

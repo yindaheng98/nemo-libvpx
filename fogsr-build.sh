@@ -2,7 +2,6 @@
 ./configure \
 --log=yes \
 --target=x86_64-linux-gcc \
---disable-optimizations \
 --enable-debug \
 --disable-install-docs \
 --disable-tools \
@@ -10,5 +9,4 @@
 --disable-unit-tests \
 --enable-vp9 \
 --disable-vp8 \
---enable-internal-stats \
 --enable-libyuv

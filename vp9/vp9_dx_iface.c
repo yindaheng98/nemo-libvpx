@@ -258,6 +258,17 @@ static vpx_codec_err_t init_decoder(vpx_codec_alg_priv_t *ctx) {
 
   init_buffer_callbacks(ctx);
 
+  /* NEMO: copy variables from ctx */
+  ctx->pbi->common.bilinear_coeff = init_bilinear_coeff(64, 64, ctx->scale);
+  ctx->pbi->common.scale = ctx->scale;
+
+  /* NEMO: initialize workers */
+  if ((ctx->pbi->nemo_worker_data = init_nemo_worker(
+           (ctx->pbi->max_threads > 1) ? ctx->pbi->max_threads : 1)) == NULL) {
+    set_error_detail(ctx, "Failed to allocate nemo_worker_data");
+    return VPX_CODEC_MEM_ERROR;
+  }
+
   return VPX_CODEC_OK;
 }
 
@@ -329,6 +340,15 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
     if (res != VPX_CODEC_OK) return res;
   }
 
+  if (ctx->sr_img) {
+    image2yuvconfig(ctx->sr_img, &(ctx->pbi->sr_img));
+    ctx->sr_img = NULL;
+    ctx->pbi->common.scale = ctx->scale;
+    ctx->pbi->common.apply_dnn = 1;
+  } else {
+    ctx->pbi->common.apply_dnn = 0;
+  }
+
   res = vp9_parse_superframe_index(data, data_sz, frame_sizes, &frame_count,
                                    ctx->decrypt_cb, ctx->decrypt_state);
   if (res != VPX_CODEC_OK) return res;
@@ -374,6 +394,13 @@ static vpx_codec_err_t decoder_decode(vpx_codec_alg_priv_t *ctx,
   return res;
 }
 
+static vpx_codec_err_t decoder_set_sr_frame(vpx_codec_alg_priv_t *ctx,
+                                            vpx_image_t *img, int scale) {
+  ctx->sr_img = img;
+  ctx->scale = scale;
+  return VPX_CODEC_OK;  // TODO
+}
+
 static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
                                       vpx_codec_iter_t *iter) {
   vpx_image_t *img = NULL;
@@ -392,7 +419,9 @@ static vpx_image_t *decoder_get_frame(vpx_codec_alg_priv_t *ctx,
       ctx->last_show_frame = ctx->pbi->common.new_fb_idx;
       if (ctx->need_resync) return NULL;
       yuvconfig2image(&ctx->img, &sd, ctx->user_priv);
-      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_frame_buffer.priv;
+
+      /* Yin: return the sr priv */
+      ctx->img.fb_priv = frame_bufs[cm->new_fb_idx].raw_sr_frame_buffer.priv;
       img = &ctx->img;
       return img;
     }
@@ -677,6 +706,7 @@ CODEC_INTERFACE(vpx_codec_vp9_dx) = {
       decoder_decode,     // vpx_codec_decode_fn_t
       decoder_get_frame,  // vpx_codec_frame_get_fn_t
       decoder_set_fb_fn,  // vpx_codec_set_fb_fn_t
+      decoder_set_sr_frame,
   },
   {
       // NOLINT

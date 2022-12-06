@@ -19,6 +19,8 @@ struct vpx_codec_alg_priv {
   vpx_codec_priv_t base;
   vpx_codec_dec_cfg_t cfg;
   vp9_stream_info_t si;
+  vpx_image_t *sr_img;
+  int scale;
   VP9Decoder *pbi;
   void *user_priv;
   int postproc_cfg_set;
